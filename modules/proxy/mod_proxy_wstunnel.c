@@ -29,6 +29,7 @@ typedef struct ws_baton_t {
     request_rec *r;
     proxy_conn_rec *backend;
     proxy_tunnel_rec *tunnel;
+    apr_pool_t *async_pool;
     const char *scheme;
 } ws_baton_t;
 
@@ -82,17 +83,23 @@ static void proxy_wstunnel_cancel_callback(void *b)
 static void proxy_wstunnel_callback(void *b)
 { 
     ws_baton_t *baton = (ws_baton_t*)b;
-    proxyws_dir_conf *dconf = ap_get_module_config(baton->r->per_dir_config,
-                                                   &proxy_wstunnel_module);
-    int status = proxy_wstunnel_pump(baton, 1);
-    if (status == SUSPENDED) {
-        ap_mpm_register_poll_callback_timeout(baton->tunnel->pfds,
-            proxy_wstunnel_callback, 
-            proxy_wstunnel_cancel_callback, 
-            baton, 
-            dconf->idle_timeout);
+
+    /* Clear MPM's temporary data */
+    AP_DEBUG_ASSERT(baton->async_pool != NULL);
+    apr_pool_clear(baton->async_pool);
+
+    if (proxy_wstunnel_pump(baton, 1) == SUSPENDED) {
+        proxyws_dir_conf *dconf = ap_get_module_config(baton->r->per_dir_config,
+                                                       &proxy_wstunnel_module);
+
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, baton->r,
                       "proxy_wstunnel_callback suspend");
+
+        ap_mpm_register_poll_callback_timeout(baton->async_pool,
+                                              baton->tunnel->pfds,
+                                              proxy_wstunnel_callback, 
+                                              proxy_wstunnel_cancel_callback, 
+                                              baton, dconf->idle_timeout);
     }
     else { 
         proxy_wstunnel_finish(baton);
@@ -239,9 +246,7 @@ static int proxy_wstunnel_request(apr_pool_t *p, request_rec *r,
 
     apr_brigade_cleanup(header_brigade);
 
-    ap_remove_input_filter_byhandle(c->input_filters, "reqtimeout");
-
-    rv = ap_proxy_tunnel_create(&tunnel, r, conn->connection, scheme);
+    rv = ap_proxy_tunnel_create(&tunnel, r, backconn, scheme);
     if (rv != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, APLOGNO(02543)
                       "error creating websocket tunnel");
@@ -262,7 +267,15 @@ static int proxy_wstunnel_request(apr_pool_t *p, request_rec *r,
         tunnel->timeout = dconf->async_delay;
         status = proxy_wstunnel_pump(baton, 1);
         if (status == SUSPENDED) {
-            rv = ap_mpm_register_poll_callback_timeout(tunnel->pfds,
+            /* Create the subpool used by the MPM to alloc its own
+             * temporary data, which we want to clear on the next
+             * round (above) to avoid leaks.
+             */
+            apr_pool_create(&baton->async_pool, baton->r->pool);
+
+            rv = ap_mpm_register_poll_callback_timeout(
+                         baton->async_pool,
+                         baton->tunnel->pfds,
                          proxy_wstunnel_callback, 
                          proxy_wstunnel_cancel_callback, 
                          baton, 
@@ -270,7 +283,8 @@ static int proxy_wstunnel_request(apr_pool_t *p, request_rec *r,
             if (rv == APR_SUCCESS) { 
                 return SUSPENDED;
             }
-            else if (APR_STATUS_IS_ENOTIMPL(rv)) { 
+
+            if (APR_STATUS_IS_ENOTIMPL(rv)) { 
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, APLOGNO(02544) "No async support");
                 tunnel->timeout = dconf->idle_timeout;
                 status = proxy_wstunnel_pump(baton, 0); /* force no async */
@@ -409,7 +423,7 @@ static const char * proxyws_set_idle(cmd_parms *cmd, void *conf, const char *val
     return NULL;
 }
 
-static const char * proxyws_set_aysnch_delay(cmd_parms *cmd, void *conf, const char *val)
+static const char * proxyws_set_asynch_delay(cmd_parms *cmd, void *conf, const char *val)
 {
     proxyws_dir_conf *dconf = conf;
     if (ap_timeout_parameter_parse(val, &(dconf->async_delay), "s") != APR_SUCCESS)
@@ -423,7 +437,7 @@ static const command_rec ws_proxy_cmds[] =
                   RSRC_CONF|ACCESS_CONF,
                   "timeout for activity in either direction, unlimited by default"),
 
-    AP_INIT_TAKE1("ProxyWebsocketAsyncDelay", proxyws_set_aysnch_delay, NULL,
+    AP_INIT_TAKE1("ProxyWebsocketAsyncDelay", proxyws_set_asynch_delay, NULL,
                  RSRC_CONF|ACCESS_CONF,
                  "amount of time to poll before going asynchronous"),
     {NULL}

@@ -230,7 +230,7 @@ static int mod_info_has_cmd(const command_rec * cmds, ap_directive_t * dir)
     if (cmds == NULL)
         return 1;
     for (cmd = cmds; cmd->name; ++cmd) {
-        if (strcasecmp(cmd->name, dir->directive) == 0)
+        if (ap_cstr_casecmp(cmd->name, dir->directive) == 0)
             return 1;
     }
     return 0;
@@ -322,6 +322,7 @@ static const hook_lookup_t request_hooks[] = {
     {"HTTP Scheme", ap_hook_get_http_scheme},
     {"Default Port", ap_hook_get_default_port},
     {"Quick Handler", ap_hook_get_quick_handler},
+    {"Pre-Translate Name", ap_hook_get_pre_translate_name},
     {"Translate Name", ap_hook_get_translate_name},
     {"Map to Storage", ap_hook_get_map_to_storage},
     {"Check Access", ap_hook_get_access_checker_ex},

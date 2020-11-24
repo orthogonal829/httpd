@@ -640,8 +640,15 @@ AP_CORE_DECLARE(void) ap_parse_uri(request_rec *r, const char *uri)
         }
 
         r->args = r->parsed_uri.query;
-        r->uri = r->parsed_uri.path ? r->parsed_uri.path
-                 : apr_pstrdup(r->pool, "/");
+        if (r->parsed_uri.path) {
+            r->uri = r->parsed_uri.path;
+        }
+        else if (r->method_number == M_OPTIONS) {
+            r->uri = apr_pstrdup(r->pool, "*");
+        }
+        else {
+            r->uri = apr_pstrdup(r->pool, "/");
+        }
 
 #if defined(OS2) || defined(WIN32)
         /* Handle path translations for OS/2 and plug security hole.
@@ -748,7 +755,7 @@ AP_DECLARE(int) ap_parse_request_line(request_rec *r)
     enum {
         rrl_none, rrl_badmethod, rrl_badwhitespace, rrl_excesswhitespace,
         rrl_missinguri, rrl_baduri, rrl_badprotocol, rrl_trailingtext,
-        rrl_badmethod09, rrl_reject09, rrl_versionnotsupported
+        rrl_badmethod09, rrl_reject09
     } deferred_error = rrl_none;
     apr_size_t len = 0;
     char *uri, *ll;
@@ -886,7 +893,7 @@ rrl_done:
             memcpy((char*)r->protocol, "HTTP", 4);
     }
     else if (r->protocol[0]) {
-        r->proto_num = HTTP_VERSION(0,9);
+        r->proto_num = HTTP_VERSION(0, 9);
         /* Defer setting the r->protocol string till error msg is composed */
         if (deferred_error == rrl_none)
             deferred_error = rrl_badprotocol;
@@ -897,11 +904,6 @@ rrl_done:
         r->proto_num = HTTP_VERSION(0, 9);
     }
 
-    if (strict && deferred_error == rrl_none
-        && r->proto_num >= HTTP_VERSION(2, 0)) {
-        deferred_error = rrl_versionnotsupported;
-    }
-
     /* Determine the method_number and parse the uri prior to invoking error
      * handling, such that these fields are available for substitution
      */
@@ -910,6 +912,14 @@ rrl_done:
         r->header_only = 1;
 
     ap_parse_uri(r, uri);
+    if (r->status == HTTP_OK
+            && (r->parsed_uri.path != NULL)
+            && (r->parsed_uri.path[0] != '/')
+            && (r->method_number != M_OPTIONS
+                || strcmp(r->parsed_uri.path, "*") != 0)) {
+        /* Invalid request-target per RFC 7230 section 5.3 */
+        r->status = HTTP_BAD_REQUEST;
+    }
 
     /* With the request understood, we can consider HTTP/0.9 specific errors */
     if (r->proto_num == HTTP_VERSION(0, 9) && deferred_error == rrl_none) {
@@ -923,7 +933,6 @@ rrl_done:
      * we can safely resume any deferred error reporting
      */
     if (deferred_error != rrl_none) {
-        r->status = HTTP_BAD_REQUEST;
         if (deferred_error == rrl_badmethod)
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(03445)
                           "HTTP Request Line; Invalid method token: '%.*s'",
@@ -960,13 +969,7 @@ rrl_done:
                           "HTTP Request Line; Unrecognized protocol '%.*s' "
                           "(perhaps whitespace was injected?)",
                           field_name_len(r->protocol), r->protocol);
-        else if (deferred_error == rrl_versionnotsupported) {
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO()
-                          "HTTP Request Line; Protocol '%.*s' >= HTTP/2.0 not"
-                          " supported", field_name_len(r->protocol),
-                          r->protocol);
-            r->status = HTTP_VERSION_NOT_SUPPORTED;
-        }
+        r->status = HTTP_BAD_REQUEST;
         goto rrl_failed;
     }
 
@@ -1516,9 +1519,22 @@ request_rec *ap_read_request(conn_rec *conn)
             goto die_unusable_input;
         }
 
+        clen = apr_table_get(r->headers_in, "Content-Length");
+        if (clen) {
+            apr_off_t cl;
+
+            if (!ap_parse_strict_length(&cl, clen)) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(10242)
+                              "client sent invalid Content-Length "
+                              "(%s): %s", clen, r->uri);
+                access_status = HTTP_BAD_REQUEST;
+                goto die_unusable_input;
+            }
+        }
+
         tenc = apr_table_get(r->headers_in, "Transfer-Encoding");
         if (tenc) {
-            /* http://tools.ietf.org/html/draft-ietf-httpbis-p1-messaging-23
+            /* https://tools.ietf.org/html/rfc7230
              * Section 3.3.3.3: "If a Transfer-Encoding header field is
              * present in a request and the chunked transfer coding is not
              * the final encoding ...; the server MUST respond with the 400
@@ -1532,23 +1548,19 @@ request_rec *ap_read_request(conn_rec *conn)
                 goto die_unusable_input;
             }
 
-            /* http://tools.ietf.org/html/draft-ietf-httpbis-p1-messaging-23
+            /* https://tools.ietf.org/html/rfc7230
              * Section 3.3.3.3: "If a message is received with both a
              * Transfer-Encoding and a Content-Length header field, the
              * Transfer-Encoding overrides the Content-Length. ... A sender
              * MUST remove the received Content-Length field".
              */
-            apr_table_unset(r->headers_in, "Content-Length");
-        }
-        else if ((clen = apr_table_get(r->headers_in, "Content-Length"))) {
-            apr_off_t cl;
+            if (clen) {
+                apr_table_unset(r->headers_in, "Content-Length");
 
-            if (!ap_parse_strict_length(&cl, clen)) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(10242)
-                              "client sent invalid Content-Length "
-                              "(%s): %s", clen, r->uri);
-                access_status = HTTP_BAD_REQUEST;
-                goto die_unusable_input;
+                /* Don't reuse this connection anyway to avoid confusion with
+                 * intermediaries and request/reponse spltting.
+                 */
+                conn->keepalive = AP_CONN_CLOSE;
             }
         }
     }

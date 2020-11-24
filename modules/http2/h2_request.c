@@ -47,9 +47,9 @@ typedef struct {
 static int set_h1_header(void *ctx, const char *key, const char *value)
 {
     h1_ctx *x = ctx;
-    x->status = h2_req_add_header(x->headers, x->pool, key, strlen(key), 
-                                  value, strlen(value));
-    return (x->status == APR_SUCCESS)? 1 : 0;
+    int was_added;
+    h2_req_add_header(x->headers, x->pool, key, strlen(key), value, strlen(value), 0, &was_added);
+    return 1;
 }
 
 apr_status_t h2_request_rcreate(h2_request **preq, apr_pool_t *pool, 
@@ -79,11 +79,12 @@ apr_status_t h2_request_rcreate(h2_request **preq, apr_pool_t *pool,
     }
     
     req = apr_pcalloc(pool, sizeof(*req));
-    req->method    = apr_pstrdup(pool, r->method);
-    req->scheme    = scheme;
-    req->authority = authority;
-    req->path      = path;
-    req->headers   = apr_table_make(pool, 10);
+    req->method      = apr_pstrdup(pool, r->method);
+    req->scheme      = scheme;
+    req->authority   = authority;
+    req->path        = path;
+    req->headers     = apr_table_make(pool, 10);
+    req->http_status = H2_HTTP_STATUS_UNSET;
     if (r->server) {
         req->serialize = h2_config_rgeti(r, H2_CONF_SER_HEADERS);
     }
@@ -99,10 +100,12 @@ apr_status_t h2_request_rcreate(h2_request **preq, apr_pool_t *pool,
 
 apr_status_t h2_request_add_header(h2_request *req, apr_pool_t *pool, 
                                    const char *name, size_t nlen,
-                                   const char *value, size_t vlen)
+                                   const char *value, size_t vlen,
+                                   size_t max_field_len, int *pwas_added)
 {
     apr_status_t status = APR_SUCCESS;
     
+    *pwas_added = 0;
     if (nlen <= 0) {
         return status;
     }
@@ -143,8 +146,9 @@ apr_status_t h2_request_add_header(h2_request *req, apr_pool_t *pool,
         }
     }
     else {
-        /* non-pseudo header, append to work bucket of stream */
-        status = h2_req_add_header(req->headers, pool, name, nlen, value, vlen);
+        /* non-pseudo header, add to table */
+        status = h2_req_add_header(req->headers, pool, name, nlen, value, vlen, 
+                                   max_field_len, pwas_added);
     }
     
     return status;
@@ -291,13 +295,28 @@ request_rec *h2_request_create_rec(const h2_request *req, conn_rec *c)
     if (!ap_parse_request_line(r) || !ap_check_request_header(r)) {
         /* we may have switched to another server still */
         r->per_dir_config = r->server->lookup_defaults;
-        access_status = r->status;
+        if (req->http_status != H2_HTTP_STATUS_UNSET) {
+            access_status = req->http_status;
+            /* Be safe and close the connection */
+            c->keepalive = AP_CONN_CLOSE;
+        }
+        else {
+            access_status = r->status;
+        }
         r->status = HTTP_OK;
         goto die;
     }
     
     /* we may have switched to another server */
     r->per_dir_config = r->server->lookup_defaults;
+
+    if (req->http_status != H2_HTTP_STATUS_UNSET) {
+        access_status = req->http_status;
+        r->status = HTTP_OK;
+        /* Be safe and close the connection */
+        c->keepalive = AP_CONN_CLOSE;
+        goto die;
+    }
 
     /*
      * Add the HTTP_IN filter here to ensure that ap_discard_request_body

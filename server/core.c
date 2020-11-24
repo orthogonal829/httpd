@@ -41,7 +41,6 @@
 #include "http_vhost.h"
 #include "http_main.h"     /* For the default_handler below... */
 #include "http_log.h"
-#include "util_md5.h"
 #include "http_connection.h"
 #include "apr_buckets.h"
 #include "util_filter.h"
@@ -83,10 +82,6 @@
 
 /* valid in core-conf, but not in runtime r->used_path_info */
 #define AP_ACCEPT_PATHINFO_UNSET 3
-
-#define AP_CONTENT_MD5_OFF   0
-#define AP_CONTENT_MD5_ON    1
-#define AP_CONTENT_MD5_UNSET 2
 
 #define AP_FLUSH_MAX_THRESHOLD 65536
 #define AP_FLUSH_MAX_PIPELINED 5
@@ -159,7 +154,6 @@ static void *create_core_dir_config(apr_pool_t *a, char *dir)
     conf->override = OR_UNSET|OR_NONE;
     conf->override_opts = OPT_UNSET | OPT_ALL | OPT_SYM_OWNER | OPT_MULTI;
 
-    conf->content_md5 = AP_CONTENT_MD5_UNSET;
     conf->accept_path_info = AP_ACCEPT_PATHINFO_UNSET;
 
     conf->use_canonical_name = USE_CANONICAL_NAME_UNSET;
@@ -284,10 +278,6 @@ static void *merge_core_dir_configs(apr_pool_t *a, void *basev, void *newv)
 
     if (new->hostname_lookups != HOSTNAME_LOOKUP_UNSET) {
         conf->hostname_lookups = new->hostname_lookups;
-    }
-
-    if (new->content_md5 != AP_CONTENT_MD5_UNSET) {
-        conf->content_md5 = new->content_md5;
     }
 
     if (new->accept_path_info != AP_ACCEPT_PATHINFO_UNSET) {
@@ -1911,7 +1901,10 @@ static const char *set_override(cmd_parms *cmd, void *d_, const char *l)
             d->override |= OR_INDEXES;
         }
         else if (!ap_cstr_casecmp(w, "Nonfatal")) {
-            if (!ap_cstr_casecmp(v, "Override")) {
+            if (!v) {
+                return apr_pstrcat(cmd->pool, "=Override, =Unknown or =All expected after ", w, NULL);
+            }
+            else if (!ap_cstr_casecmp(v, "Override")) {
                 d->override |= NONFATAL_OVERRIDE;
             }
             else if (!ap_cstr_casecmp(v, "Unknown")) {
@@ -2240,6 +2233,9 @@ static const char *set_etag_bits(cmd_parms *cmd, void *mconfig,
         }
         else if (ap_cstr_casecmp(token, "INode") == 0) {
             bit = ETAG_INODE;
+        }
+        else if (ap_cstr_casecmp(token, "Digest") == 0) {
+            bit = ETAG_DIGEST;
         }
         else {
             return apr_pstrcat(cmd->pool, "Unknown keyword '",
@@ -3388,14 +3384,6 @@ static const char *set_serverpath(cmd_parms *cmd, void *dummy,
 
     cmd->server->path = arg;
     cmd->server->pathlen = (int)strlen(arg);
-    return NULL;
-}
-
-static const char *set_content_md5(cmd_parms *cmd, void *d_, int arg)
-{
-    core_dir_config *d = d_;
-
-    d->content_md5 = arg ? AP_CONTENT_MD5_ON : AP_CONTENT_MD5_OFF;
     return NULL;
 }
 
@@ -4781,8 +4769,6 @@ AP_INIT_TAKE1("ServerPath", set_serverpath, NULL, RSRC_CONF,
   "The pathname the server can be reached at"),
 AP_INIT_TAKE1("Timeout", set_timeout, NULL, RSRC_CONF,
   "Timeout duration (sec)"),
-AP_INIT_FLAG("ContentDigest", set_content_md5, NULL, OR_OPTIONS,
-  "whether or not to send a Content-MD5 header with each request"),
 AP_INIT_TAKE1("UseCanonicalName", set_use_canonical_name, NULL,
   RSRC_CONF|ACCESS_CONF,
   "How to work out the ServerName : Port when constructing URLs"),
@@ -5096,18 +5082,8 @@ static int default_handler(request_rec *r)
     int errstatus;
     apr_file_t *fd = NULL;
     apr_status_t status;
-    /* XXX if/when somebody writes a content-md5 filter we either need to
-     *     remove this support or coordinate when to use the filter vs.
-     *     when to use this code
-     *     The current choice of when to compute the md5 here matches the 1.3
-     *     support fairly closely (unlike 1.3, we don't handle computing md5
-     *     when the charset is translated).
-     */
-    int bld_content_md5;
 
     d = (core_dir_config *)ap_get_core_module_config(r->per_dir_config);
-    bld_content_md5 = (d->content_md5 == AP_CONTENT_MD5_ON)
-                      && r->output_filters->frec->ftype != AP_FTYPE_RESOURCE;
 
     ap_allow_standard_methods(r, MERGE_ALLOW, M_GET, M_OPTIONS, M_POST, -1);
 
@@ -5181,13 +5157,9 @@ static int default_handler(request_rec *r)
 
         ap_update_mtime(r, r->finfo.mtime);
         ap_set_last_modified(r);
-        ap_set_etag(r);
+        ap_set_etag_fd(r, fd);
         ap_set_accept_ranges(r);
         ap_set_content_length(r, r->finfo.size);
-        if (bld_content_md5) {
-            apr_table_setn(r->headers_out, "Content-MD5",
-                           ap_md5digest(r->pool, fd));
-        }
 
         bb = apr_brigade_create(r->pool, c->bucket_alloc);
 
@@ -5465,7 +5437,6 @@ static conn_rec *core_create_conn(apr_pool_t *ptrans, server_rec *s,
     c->slaves = apr_array_make(c->pool, 20, sizeof(conn_slave_rec *));
     c->requests = apr_array_make(c->pool, 20, sizeof(request_rec *));
 
-
     if ((rv = apr_socket_addr_get(&c->local_addr, APR_LOCAL, csd))
         != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_INFO, rv, s, APLOGNO(00137)
@@ -5473,8 +5444,17 @@ static conn_rec *core_create_conn(apr_pool_t *ptrans, server_rec *s,
         apr_socket_close(csd);
         return NULL;
     }
+    if (apr_sockaddr_ip_get(&c->local_ip, c->local_addr)) {
+#if APR_HAVE_SOCKADDR_UN
+        if (c->local_addr->family == APR_UNIX) {
+            c->local_ip = apr_pstrndup(c->pool, c->local_addr->ipaddr_ptr,
+                                       c->local_addr->ipaddr_len);
+        }
+        else
+#endif
+        c->local_ip = apr_pstrdup(c->pool, "unknown");
+    }
 
-    apr_sockaddr_ip_get(&c->local_ip, c->local_addr);
     if ((rv = apr_socket_addr_get(&c->client_addr, APR_REMOTE, csd))
         != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_INFO, rv, s, APLOGNO(00138)
@@ -5482,8 +5462,17 @@ static conn_rec *core_create_conn(apr_pool_t *ptrans, server_rec *s,
         apr_socket_close(csd);
         return NULL;
     }
+    if (apr_sockaddr_ip_get(&c->client_ip, c->client_addr)) {
+#if APR_HAVE_SOCKADDR_UN
+        if (c->client_addr->family == APR_UNIX) {
+            c->client_ip = apr_pstrndup(c->pool, c->client_addr->ipaddr_ptr,
+                                        c->client_addr->ipaddr_len);
+        }
+        else
+#endif
+        c->client_ip = apr_pstrdup(c->pool, "unknown");
+    }
 
-    apr_sockaddr_ip_get(&c->client_ip, c->client_addr);
     c->base_server = s;
 
     c->id = id;
@@ -5874,6 +5863,7 @@ static int core_upgrade_storage(request_rec *r)
 
 static void register_hooks(apr_pool_t *p)
 {
+    ap_runtime_dir = NULL;
     errorlog_hash = apr_hash_make(p);
     ap_register_log_hooks(p);
     ap_register_config_hooks(p);

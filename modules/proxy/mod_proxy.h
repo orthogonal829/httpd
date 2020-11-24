@@ -116,6 +116,7 @@ struct proxy_remote {
     const char *protocol;   /* the scheme used to talk to this proxy */
     const char *hostname;   /* the hostname of this proxy */
     ap_regex_t *regexp;     /* compiled regex (if any) for the remote */
+    const char *creds;      /* auth credentials (if any) for the proxy */
     int use_regex;          /* simple boolean. True if we have a regex pattern */
     apr_port_t  port;       /* the port for this proxy */
 };
@@ -123,6 +124,8 @@ struct proxy_remote {
 #define PROXYPASS_NOCANON 0x01
 #define PROXYPASS_INTERPOLATE 0x02
 #define PROXYPASS_NOQUERY 0x04
+#define PROXYPASS_MAP_ENCODED 0x08
+#define PROXYPASS_MAP_SERVLET 0x18 /* + MAP_ENCODED */
 struct proxy_alias {
     const char  *real;
     const char  *fake;
@@ -199,6 +202,8 @@ typedef struct {
     unsigned int inherit_set:1;
     unsigned int ppinherit:1;
     unsigned int ppinherit_set:1;
+    unsigned int map_encoded_one:1;
+    unsigned int map_encoded_all:1;
 } proxy_server_conf;
 
 typedef struct {
@@ -243,6 +248,11 @@ typedef struct {
     unsigned int forward_100_continue_set:1;
 
     apr_array_header_t *error_override_codes;
+
+    apr_interval_time_t async_delay;
+    apr_interval_time_t async_idle_timeout;
+    unsigned int async_delay_set:1;
+    unsigned int async_idle_timeout_set:1;
 } proxy_dir_conf;
 
 /* if we interpolate env vars per-request, we'll need a per-request
@@ -1181,7 +1191,11 @@ PROXY_DECLARE(apr_status_t) ap_proxy_sync_balancer(proxy_balancer *b,
  * @param r     request
  * @param ent   proxy_alias record
  * @param dconf per-dir config or NULL
- * @return      DECLINED, DONE or OK if matched
+ * @return      OK if the alias matched,
+ *              DONE if the alias matched and r->uri was normalized so
+ *                   no further transformation should happen on it,
+ *              DECLINED if proxying is disabled for this alias,
+ *              HTTP_CONTINUE if the alias did not match
  */
 PROXY_DECLARE(int) ap_proxy_trans_match(request_rec *r,
                                         struct proxy_alias *ent,
@@ -1236,6 +1250,7 @@ typedef struct {
     apr_interval_time_t timeout;
     struct proxy_tunnel_conn *client,
                              *origin;
+    apr_size_t read_buf_size;
     int replied;
 } proxy_tunnel_rec;
 
@@ -1348,9 +1363,10 @@ PROXY_DECLARE(apr_status_t) ap_proxy_buckets_lifetime_transform(request_rec *r,
  * The flags for ap_proxy_transfer_between_connections(), where for legacy and
  * compatibility reasons FLUSH_EACH and FLUSH_AFTER are boolean values.
  */
-#define AP_PROXY_TRANSFER_FLUSH_EACH    (0x0)
-#define AP_PROXY_TRANSFER_FLUSH_AFTER   (0x1)
-#define AP_PROXY_TRANSFER_SHOULD_YIELD  (0x2)
+#define AP_PROXY_TRANSFER_FLUSH_EACH        (0x00)
+#define AP_PROXY_TRANSFER_FLUSH_AFTER       (0x01)
+#define AP_PROXY_TRANSFER_YIELD_PENDING     (0x02)
+#define AP_PROXY_TRANSFER_YIELD_MAX_READS   (0x04)
 
 /*
  * Sends all data that can be read non blocking from the input filter chain of
@@ -1373,7 +1389,7 @@ PROXY_DECLARE(apr_status_t) ap_proxy_buckets_lifetime_transform(request_rec *r,
  * @return      apr_status_t of the operation. Could be any error returned from
  *              either the input filter chain of c_i or the output filter chain
  *              of c_o, APR_EPIPE if the outgoing connection was aborted, or
- *              APR_INCOMPLETE if AP_PROXY_TRANSFER_SHOULD_YIELD was set and
+ *              APR_INCOMPLETE if AP_PROXY_TRANSFER_YIELD_PENDING was set and
  *              the output stack gets full before the input stack is exhausted.
  */
 PROXY_DECLARE(apr_status_t) ap_proxy_transfer_between_connections(

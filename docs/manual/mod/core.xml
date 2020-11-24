@@ -669,48 +669,6 @@ variables</description>
 </directivesynopsis>
 
 <directivesynopsis>
-<name>ContentDigest</name>
-<description>Enables the generation of <code>Content-MD5</code> HTTP Response
-headers</description>
-<syntax>ContentDigest On|Off</syntax>
-<default>ContentDigest Off</default>
-<contextlist><context>server config</context><context>virtual host</context>
-<context>directory</context><context>.htaccess</context>
-</contextlist>
-<override>Options</override>
-<status>Experimental</status>
-
-<usage>
-    <p>This directive enables the generation of
-    <code>Content-MD5</code> headers as defined in RFC1864
-    respectively RFC2616.</p>
-
-    <p>MD5 is an algorithm for computing a "message digest"
-    (sometimes called "fingerprint") of arbitrary-length data, with
-    a high degree of confidence that any alterations in the data
-    will be reflected in alterations in the message digest.</p>
-
-    <p>The <code>Content-MD5</code> header provides an end-to-end
-    message integrity check (MIC) of the entity-body. A proxy or
-    client may check this header for detecting accidental
-    modification of the entity-body in transit. Example header:</p>
-
-    <example>
-      Content-MD5: AuLb7Dp1rqtRtxz2m9kRpA==
-    </example>
-
-    <p>Note that this can cause performance problems on your server
-    since the message digest is computed on every request (the
-    values are not cached).</p>
-
-    <p><code>Content-MD5</code> is only sent for documents served
-    by the <module>core</module>, and not by any module. For example,
-    SSI documents, output from CGI scripts, and byte range responses
-    do not have this header.</p>
-</usage>
-</directivesynopsis>
-
-<directivesynopsis>
 <name>DefaultRuntimeDir</name>
 <description>Base directory for the server run-time files</description>
 <syntax>DefaultRuntimeDir <var>directory-path</var></syntax>
@@ -1926,15 +1884,18 @@ earlier.</compatibility>
          <highlight language="config">
 FileETag INode MTime Size
          </highlight></dd>
+     <dt><strong>Digest</strong></dt>
+     <dd>If a document is file-based, the <code>ETag</code> field will be
+       calculated by taking the digest over the file.</dd>
      <dt><strong>None</strong></dt>
      <dd>If a document is file-based, no <code>ETag</code> field will be
        included in the response</dd>
     </dl>
 
-    <p>The <code>INode</code>, <code>MTime</code>, and <code>Size</code>
-    keywords may be prefixed with either <code>+</code> or <code>-</code>,
-    which allow changes to be made to the default setting inherited
-    from a broader scope. Any keyword appearing without such a prefix
+    <p>The <code>INode</code>, <code>MTime</code>, <code>Size</code> and
+    <code>Digest</code> keywords may be prefixed with either <code>+</code>
+    or <code>-</code>, which allow changes to be made to the default setting
+    inherited from a broader scope. Any keyword appearing without such a prefix
     immediately and completely cancels the inherited setting.</p>
 
     <p>If a directory's configuration includes
@@ -1943,18 +1904,10 @@ FileETag INode MTime Size
     the setting for that subdirectory (which will be inherited by
     any sub-subdirectories that don't override it) will be equivalent to
     <code>FileETag&nbsp;MTime&nbsp;Size</code>.</p>
-    <note type="warning"><title>Warning</title>
-    Do not change the default for directories or locations that have WebDAV
-    enabled and use <module>mod_dav_fs</module> as a storage provider.
-    <module>mod_dav_fs</module> uses <code>MTime&nbsp;Size</code>
-    as a fixed format for <code>ETag</code> comparisons on conditional requests.
-    These conditional requests will break if the <code>ETag</code> format is
-    changed via <directive>FileETag</directive>.
-    </note>
     <note><title>Server Side Includes</title>
     An ETag is not generated for responses parsed by <module>mod_include</module>
-    since the response entity can change without a change of the INode, MTime, or Size
-    of the static file with embedded SSI directives.
+    since the response entity can change without a change of the INode, MTime,
+    Size or Digest of the static file with embedded SSI directives.
     </note>
 
 </usage>
@@ -2212,7 +2165,7 @@ ForceType image/gif
     <p>Finally, if you have <a
     href="mod_authz_host.html#reqhost">hostname-based Require
     directives</a>, a hostname lookup will be performed regardless of
-    the setting of <code>HostnameLookups</code>.</p>
+    the setting of <directive>HostnameLookups</directive>.</p>
 </usage>
 </directivesynopsis>
 
@@ -2910,8 +2863,8 @@ will be accepted from the client</description>
 <contextlist><context>server config</context><context>virtual host</context></contextlist>
 
 <usage>
-    <p><var>Number</var> is an integer from 0 (meaning unlimited) to
-    32767. The default value is defined by the compile-time
+    <p>Setting <var>number</var> at 0 means unlimited.
+    The default value is defined by the compile-time
     constant <code>DEFAULT_LIMIT_REQUEST_FIELDS</code> (100 as
     distributed).</p>
 
@@ -4980,9 +4933,15 @@ certain events before failing a request</description>
     <p>This directive can be used to toggle the use of <directive module="core"
     type="section">IfDefine</directive> sections without needing to alter
     <code>-D</code> arguments in any startup scripts.</p>
-    <p>While this directive is supported in virtual host context,
-       the changes it makes are visible to any later configuration
-       directives, beyond any enclosing virtual host.</p>
+
+    <p>Variable names may not contain colon ":" characters, to avoid clashes
+    with <directive module="mod_rewrite">RewriteMap</directive>'s syntax.</p>
+
+    <note><title>Virtual Host scope and pitfalls</title>
+      <p>While this directive is supported in virtual host context,
+         the changes it makes are visible to any later configuration
+         directives, beyond any enclosing virtual host.</p>
+    </note>
 </usage>
 <seealso><directive module="core">Define</directive></seealso>
 <seealso><directive module="core">IfDefine</directive></seealso>

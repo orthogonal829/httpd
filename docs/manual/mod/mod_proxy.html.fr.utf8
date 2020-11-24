@@ -79,7 +79,9 @@
         <tr><td>ftp</td><td><code class="module"><a href="../mod/mod_proxy_ftp.html">mod_proxy_ftp</a></code></td></tr>
         <tr><td>HTTP/0.9, HTTP/1.0, et
           HTTP/1.1</td><td><code class="module"><a href="../mod/mod_proxy_http.html">mod_proxy_http</a></code></td></tr>
+	<tr><td>HTTP/2.0</td><td><code class="module"><a href="../mod/mod_proxy_http2.html">mod_proxy_http2</a></code></td></tr>
         <tr><td>SCGI</td><td><code class="module"><a href="../mod/mod_proxy_scgi.html">mod_proxy_scgi</a></code></td></tr>
+	<tr><td>UWSGI</td><td><code class="module"><a href="../mod/mod_proxy_uwsgi.html">mod_proxy_uwsgi</a></code></td></tr>
 	<tr><td>WS and WSS (Web-sockets)</td><td><code class="module"><a href="../mod/mod_proxy_wstunnel.html">mod_proxy_wstunnel</a></code></td></tr>
         </table>
       </li>
@@ -711,7 +713,7 @@ NoProxy         .example.com 192.168.112.0/21</pre>
       compte de la casse, et les parties droites des <var>Domaine</var>s
       sont toujours censées correspondre à la racine de l'arborescence
       DNS, si bien que les domaines <code>.ExEmple.com</code> et
-      <code>.example.com.</code> (notez le point à la fin du nom) sont
+      <code>.exemple.com.</code> (notez le point à la fin du nom) sont
       considérés comme identiques. Comme une comparaison de domaines ne
       nécessite pas de recherche DNS, elle est beaucoup plus efficace
       qu'une comparaison de sous-réseaux.</p>
@@ -2175,17 +2177,19 @@ et FTP</td></tr>
 <table class="directive">
 <tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Mandataire distant à utiliser pour traiter certaines
 requêtes</td></tr>
-<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>ProxyRemote <var>comparaison</var> <var>serveur-distant</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>ProxyRemote <var>match</var> <var>remote-server</var> [<var>username:password</var>]</code></td></tr>
 <tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration globale, serveur virtuel</td></tr>
 <tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Extension</td></tr>
 <tr><th><a href="directive-dict.html#Module">Module:</a></th><td>mod_proxy</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Le troisième argument optionnel est disponible à partir de la
+version 2.5.1 du serveur HTTP Apache.</td></tr>
 </table>
     <p>Cette directive permet de définir des mandataires distants pour
-    ce mandataire. <var>comparaison</var> est soit le nom d'un protocole
+    ce mandataire. <var>match</var> est soit le nom d'un protocole
     que supporte le serveur distant, soit une URL partielle pour
     laquelle le serveur distant devra être utilisé, soit <code>*</code>
     pour indiquer que le serveur distant doit être utilisé pour toutes
-    les requêtes. <var>serveur-distant</var> est une URL partielle
+    les requêtes. <var>remote-server</var> est une URL partielle
     correspondant au serveur distant. Syntaxe : </p>
 
     <div class="example"><p><code>
@@ -2212,6 +2216,13 @@ ProxyRemote ftp http://ftpproxy.mydomain:8080</pre>
     inverse ; un serveur web d'arrière-plan peut être intégré dans
     l'espace d'URL d'un serveur virtuel, même si ce serveur est caché
     par un autre mandataire direct.</p>
+
+    <p>Le troisième argument optionnel <var>username:password</var> permet de
+    spécifier des données d'authentification basiques à transmettre au mandataire
+    distant défini. Ces données d'authentification seront toujoujours envoyées
+    sans attendre que le mandataire distant n'effectue une demande
+    d'authentification. La variable d'environnement <a href="mod_proxy_http.html#env">Proxy-Chain-Auth</a> n'est plus prise en
+    compte si cet argument est utilisé.</p>
 
 </div>
 <div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>

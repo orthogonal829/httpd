@@ -1649,7 +1649,7 @@ static void balancer_display_page(request_rec *r, proxy_server_conf *conf,
             ap_rvputs(r, balancer->s->vpath, "</td>\n", NULL);
             ap_rprintf(r, "<td>%s</td>\n",
                        !balancer->s->inactive ? "Yes" : "No");
-            ap_rputs("</table>\n<br />", r);
+            ap_rputs("</tr>\n</table>\n<br />", r);
             ap_rputs("\n\n<table><tr>"
                 "<th>Worker URL</th>"
                 "<th>Route</th><th>RouteRedir</th>"
@@ -2014,7 +2014,7 @@ static void balancer_child_init(apr_pool_t *p, server_rec *s)
                              balancer->s->name);
                 exit(1); /* Ugly, but what else? */
             }
-            init_balancer_members(conf->pool, s, balancer);
+            init_balancer_members(p, s, balancer);
         }
         s = s->next;
     }

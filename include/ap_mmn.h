@@ -632,14 +632,41 @@
  * 20200420.1 (2.5.1-dev)  Add ap_filter_adopt_brigade()
  * 20200420.2 (2.5.1-dev)  Add ap_proxy_worker_can_upgrade()
  * 20200420.3 (2.5.1-dev)  Add ap_parse_strict_length()
+ * 20200420.4 (2.5.1-dev)  Add ap_normalize_path()
+ * 20200420.5 (2.5.1-dev)  Add pre_translate_name hook
+ * 20200420.6 (2.5.1-dev)  Add map_encoded_one and map_encoded_all bits to
+ *                         proxy_server_conf
+ * 20200420.7 (2.5.1-dev)  Add struct etag_rec, ap_make_etag_ex(),
+ *                         ap_set_etag_fd(). Add typedef ap_request_bnotes_t,
+ *                         macros AP_REQUEST_GET_BNOTE, AP_REQUEST_SET_BNOTE,
+ *                         AP_REQUEST_STRONG_ETAG, AP_REQUEST_IS_STRONG_ETAG.
+ *                         Add bnotes to request_rec.
+ * 20200420.8 (2.5.1-dev)  Add dav_get_provider(), dav_open_lockdb() and
+ *                         dav_close_lockdb() mod_dav.h.
+ * 20200420.9 (2.5.1-dev)  Add hooks deliver_report and gather_reports to
+ *                         mod_dav.h.
+ * 20200420.10 (2.5.1-dev) Add method_precondition hook to mod_dav.h.
+ * 20200701.0 (2.5.1-dev)  Axe ap_mpm_unregister_poll_callback() and
+ *                         mpm_unregister_poll_callback hook.
+ * 20200702.1 (2.5.1-dev)  Add pool arg to mpm_register_poll_callback and
+ *                         mpm_register_poll_callback_timeout hooks
+ * 20200702.2 (2.5.1-dev)  Add dav_get_resource().
+ * 20200703.0 (2.5.1-dev)  Remove ap_md5digest(), ap_md5contextTo64(),
+ *                         ContentDigest directive.
+ * 20200705.0 (2.5.1-dev)  Update method_precondition hook.
+ * 20200705.1 (2.5.1-dev)  Add dav_validate_root_ns(), dav_find_child_ns(),
+ *                         dav_find_next_ns(), dav_find_attr_ns() and
+ *                         dav_find_attr().
+ * 20200705.2 (2.5.1-dev)  Add dav_liveprop_elem structure and
+ *                         DAV_PROP_ELEMENT key.
  */
 
 #define MODULE_MAGIC_COOKIE 0x41503235UL /* "AP25" */
 
 #ifndef MODULE_MAGIC_NUMBER_MAJOR
-#define MODULE_MAGIC_NUMBER_MAJOR 20200420
+#define MODULE_MAGIC_NUMBER_MAJOR 20200705
 #endif
-#define MODULE_MAGIC_NUMBER_MINOR 3            /* 0...n */
+#define MODULE_MAGIC_NUMBER_MINOR 2             /* 0...n */
 
 /**
  * Determine if the server's current MODULE_MAGIC_NUMBER is at least a

@@ -187,7 +187,6 @@ AP_DECLARE(void) ap_internal_fast_redirect(request_rec *sub_req, request_rec *r)
  * @return 1 if authentication is required, 0 otherwise
  * @bug Behavior changed in 2.4.x refactoring, API no longer usable
  * @deprecated @see ap_some_authn_required()
- *
  */
 AP_DECLARE(int) ap_some_auth_required(request_rec *r);
 
@@ -362,6 +361,18 @@ AP_DECLARE(apr_status_t) ap_check_pipeline(conn_rec *c, apr_bucket_brigade *bb,
  * @ingroup hooks
  */
 AP_DECLARE_HOOK(int,create_request,(request_rec *r))
+
+/**
+ * This hook allow modules an opportunity to translate the URI into an
+ * actual filename, before URL decoding happens.
+ * @param r The current request
+ * @return DECLINED to let other modules handle the pre-translation,
+ *         OK if it was handled and no other module should process it,
+ *         DONE if no further transformation should happen on the URI,
+ *         HTTP_... in case of error.
+ * @ingroup hooks
+ */
+AP_DECLARE_HOOK(int,pre_translate_name,(request_rec *r))
 
 /**
  * This hook allow modules an opportunity to translate the URI into an

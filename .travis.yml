@@ -28,6 +28,7 @@ addons:
       - libpcre2-dev
       - libldap2-dev
       - ldap-utils
+      - gdb
 env:
   global:
     - MFLAGS=-j2
@@ -37,11 +38,14 @@ env:
 #  condition_24x_only => run the job only for 2.4.x
 #  condition_not_24x  => run the job everywhere EXCEPT 2.4.x
 _cond1: &condition_24x_only (branch is present AND branch = 2.4.x) OR (tag is present AND tag ~= /^2.4/)
-_cond2: &condition_not_24x (branch is present AND branch != 2.4.x) OR (tag is present AND tag !~ /^2.4/)
+_cond2: &condition_not_24x (branch is not present OR branch != 2.4.x) AND (tag is not present OR tag !~ /^2.4/)
 
 jobs:
   include:
     - name: Linux Ubuntu, Default module set
+    # -------------------------------------------------------------------------
+    - name: Empty APLOGNO() test
+      env: SKIP_TESTING=1 TEST_LOGNO=1
     # -------------------------------------------------------------------------
     - name: Linux s390x Ubuntu, all-modules
       arch: s390x
@@ -55,7 +59,7 @@ jobs:
       arch: arm64
       env: CONFIG="--enable-mods-shared=reallyall"
     # -------------------------------------------------------------------------
-    - if: branch = trunk
+    - if: *condition_not_24x
       name: Linux i386 Ubuntu, Shared MPMs, most modules, maintainer-mode w/-Werror
       env: CONFIG="--enable-mods-shared=reallyall --disable-xml2enc --disable-proxy-html --enable-mpms-shared=all --enable-maintainer-mode"
            PKG_CONFIG_PATH="/usr/lib/i386-linux-gnu/pkgconfig"
@@ -85,6 +89,7 @@ jobs:
     - name: Linux Ubuntu, Default, all-modules + install
       env: CONFIG="--enable-mods-shared=reallyall"
            TEST_INSTALL=1
+           APACHE_TEST_EXTRA_ARGS=-v
     # -------------------------------------------------------------------------
     - name: Linux Ubuntu, Default, all-static modules
       env: CONFIG="--enable-mods-static=reallyall"
@@ -93,19 +98,28 @@ jobs:
       env: CONFIG="--enable-mods-shared=reallyall"
            TEST_ARGS="-order=random"
     # -------------------------------------------------------------------------
-    - name: Linux Ubuntu, Prefork MPM, all-modules
-      env: CONFIG="--enable-mods-shared=reallyall --with-mpm=prefork"
+    - name: Linux Ubuntu, Prefork MPM, all-modules (except cgid)
+      env: CONFIG="--enable-mods-shared=reallyall --with-mpm=prefork --disable-cgid"
     # -------------------------------------------------------------------------
     - name: Linux Ubuntu, Worker MPM, all-modules
       env: CONFIG="--enable-mods-shared=reallyall --with-mpm=worker"
+           CLEAR_CACHE=1
     # -------------------------------------------------------------------------
     - name: Linux Ubuntu, Shared MPMs, all-modules
       env: CONFIG="--enable-mods-shared=reallyall --enable-mpms-shared=all"
     # -------------------------------------------------------------------------
-    - name: Linux Ubuntu, GCC 7 maintainer-mode w/-Werror
+    - name: Linux Ubuntu, GCC 7 maintainer-mode w/-Werror, install + VPATH
       os: linux
-      env: CONFIG="--enable-mods-shared=reallyall --enable-maintainer-mode" NOTEST_CFLAGS='-Werror -O2' CC=gcc-7
-           SKIP_TESTING=1
+      env: CONFIG="--enable-mods-shared=reallyall --enable-maintainer-mode"
+           NOTEST_CFLAGS='-Werror -O2' CC=gcc-7
+           TEST_VPATH=1 TEST_INSTALL=1 SKIP_TESTING=1
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu, Event MPM, all-modules, mod_cgid only
+      env: CONFIG="--enable-mods-shared=reallyall --with-mpm=event --disable-cgi"
+    # -------------------------------------------------------------------------
+    - if: *condition_not_24x
+      name: Linux Ubuntu, Event MPM, all-modules, mod_cgid fdpassing
+      env: CONFIG="--enable-mods-shared=reallyall --with-mpm=event --disable-cgi --enable-cgid-fdpassing"
     # -------------------------------------------------------------------------
     - if: *condition_not_24x
       name: Linux Ubuntu, PCRE 1, GCC 7 maintainer-mode w/-Werror
@@ -201,6 +215,17 @@ jobs:
            CONFIG="--enable-mods-shared=reallyall"
            APU_CONFIG="--with-crypto --with-ldap"
     # -------------------------------------------------------------------------
+    - name: Linux Ubuntu Focal, all-modules, system APR/APR-util
+      os: linux
+      dist: focal
+      env: CONFIG="--enable-mods-shared=reallyall"
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu Focal, all-modules, APR 1.7.0, APR-util 1.6.1
+      dist: focal
+      env: APR_VERSION=1.7.0 APU_VERSION=1.6.1
+           CONFIG="--enable-mods-shared=reallyall"
+           APU_CONFIG="--with-crypto --with-ldap"
+    # -------------------------------------------------------------------------
     - name: Linux Ubuntu, APR 1.7.0, APR-util 1.6.1
       env: APR_VERSION=1.7.0 APU_VERSION=1.6.1
            CONFIG="--enable-mods-shared=reallyall"
@@ -212,11 +237,26 @@ jobs:
            APU_CONFIG="--with-crypto --with-ldap"
            CLEAR_CACHE=1
     # -------------------------------------------------------------------------
-    - name: Linux Ubuntu, APR 1.7.0 --enable-pool-debug, APR-util 1.6.1
-      env: APR_VERSION=1.7.0 APR_CONFIG="--enable-pool-debug"
-           APU_VERSION=1.6.1 APU_CONFIG="--with-crypto --with-ldap"
+    - name: Linux Ubuntu, --enable-pool-debug
+      env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
            CONFIG="--enable-mods-shared=reallyall"
            TEST_MALLOC=1
+           CLEAR_CACHE=1
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu, Shared MPMs (event), pool-debug, SSL/TLS variants
+      env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
+           CONFIG="--enable-mods-shared=reallyall --enable-mpms-shared=all --with-mpm=event"
+           TEST_MALLOC=1 TEST_SSL=1
+           CLEAR_CACHE=1
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu, Shared MPMs (prefork), pool-debug, SSL/TLS variants
+      env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
+           CONFIG="--enable-mods-shared=reallyall --enable-mpms-shared=all --with-mpm=prefork"
+           TEST_MALLOC=1 TEST_SSL=1
+           CLEAR_CACHE=1
     # -------------------------------------------------------------------------
     - name: Linux Ubuntu, APR 1.7.0, APR-util 1.6.1, pool-debug, LDAP
       env: APR_VERSION=1.7.0 APR_CONFIG="--enable-pool-debug"
@@ -258,12 +298,12 @@ jobs:
       env: APR_VERSION=1.4.8 APU_VERSION=1.4.2
            CONFIG="--enable-mods-shared=reallyall"
     # -------------------------------------------------------------------------
-    - if: *condition_not_24x
-      name: Linux Ubuntu, UBSan
+    - name: Linux Ubuntu Focal, UBSan
+      dist: focal
       env: NOTEST_CFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" NOTEST_LIBS=-lubsan
            CONFIG="--enable-mods-shared=reallyall --disable-http2" TEST_UBSAN=1
   allow_failures:
-    # non-x86 are sometimes flaky
+    # Non-x86 are sometimes flaky:
     - arch: s390x
       env: CONFIG="--enable-mods-shared=reallyall"
     - arch: arm64
@@ -275,7 +315,8 @@ jobs:
 # CC=gcc, e.g. for the CC="gcc -m32" case the builds are not correct
 # otherwise.
 before_install:
-  - if [ "$TRAVIS_OS_NAME" = "linux" ]; then
+  - if [ "$TRAVIS_OS_NAME" = "linux" -a ! -v SKIP_TESTING ]; then
+        if [ -v CLEAR_CACHE ]; then rm -rf ~/perl5; fi;
         cpanm --local-lib=~/perl5 local::lib && eval $(perl -I ~/perl5/lib/perl5/ -Mlocal::lib);
         CC=gcc cpanm --notest Net::SSL LWP::Protocol::https ExtUtils::Embed Test::More AnyEvent DateTime HTTP::DAV Protocol::HTTP2::Client FCGI Apache::Test;
     fi

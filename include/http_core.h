@@ -489,12 +489,13 @@ typedef unsigned int overrides_t;
  */
 typedef unsigned long etag_components_t;
 
-#define ETAG_UNSET 0
-#define ETAG_NONE  (1 << 0)
-#define ETAG_MTIME (1 << 1)
-#define ETAG_INODE (1 << 2)
-#define ETAG_SIZE  (1 << 3)
-#define ETAG_ALL   (ETAG_MTIME | ETAG_INODE | ETAG_SIZE)
+#define ETAG_UNSET  0
+#define ETAG_NONE   (1 << 0)
+#define ETAG_MTIME  (1 << 1)
+#define ETAG_INODE  (1 << 2)
+#define ETAG_SIZE   (1 << 3)
+#define ETAG_DIGEST (1 << 4)
+#define ETAG_ALL    (ETAG_MTIME | ETAG_INODE | ETAG_SIZE)
 /* This is the default value used */
 #define ETAG_BACKWARD (ETAG_MTIME | ETAG_SIZE)
 
@@ -551,8 +552,6 @@ typedef struct {
 #define HOSTNAME_LOOKUP_DOUBLE  2
 #define HOSTNAME_LOOKUP_UNSET   3
     unsigned int hostname_lookups : 4;
-
-    unsigned int content_md5 : 2;  /* calculate Content-MD5? */
 
 #define USE_CANONICAL_NAME_OFF   (0)
 #define USE_CANONICAL_NAME_ON    (1)

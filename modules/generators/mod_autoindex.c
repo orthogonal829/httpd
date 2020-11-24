@@ -113,8 +113,8 @@ struct item {
 typedef struct ai_desc_t {
     char *pattern;
     char *description;
-    int full_path;
-    int wildcards;
+    unsigned int full_path : 1;
+    unsigned int wildcards : 1;
 } ai_desc_t;
 
 typedef struct autoindex_config_struct {
@@ -753,9 +753,11 @@ struct ent {
     apr_off_t size;
     apr_time_t lm;
     struct ent *next;
-    int ascending, ignore_case, version_sort;
+    unsigned int ascending    : 1;
+    unsigned int ignore_case  : 1;
+    unsigned int version_sort : 1;
+    unsigned int isdir        : 1;
     char key;
-    int isdir;
 };
 
 static char *find_item(const char *content_type, const char *content_encoding,
@@ -1266,8 +1268,9 @@ static struct ent *make_parent_entry(apr_int32_t autoindex_opts,
     if (!(p->name = ap_make_full_path(r->pool, r->uri, "../"))) {
         return (NULL);
     }
-    ap_getparents(p->name);
-    if (!*p->name) {
+    if (!ap_normalize_path(p->name, AP_NORMALIZE_ALLOW_RELATIVE |
+                                    AP_NORMALIZE_NOT_ABOVE_ROOT)
+            || p->name[0] == '\0') {
         return (NULL);
     }
 
@@ -1281,7 +1284,7 @@ static struct ent *make_parent_entry(apr_int32_t autoindex_opts,
     p->lm = -1;
     p->key = apr_toupper(keyid);
     p->ascending = (apr_toupper(direction) == D_ASCENDING);
-    p->version_sort = autoindex_opts & VERSION_SORT;
+    p->version_sort = !!(autoindex_opts & VERSION_SORT);
     if (autoindex_opts & FANCY_INDEXING) {
         if (!(p->icon = find_default_icon(d, testpath))) {
             p->icon = find_default_icon(d, "^^DIRECTORY^^");

@@ -15,35 +15,34 @@
  * limitations under the License.
  */
 
-#include "mod_lua.h"
-#include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <apr_thread_mutex.h>
-#include <apr_pools.h>
-#include "lua_apr.h"
-#include "lua_config.h"
+#include "apr_thread_mutex.h"
+#include "apr_pools.h"
 #include "apr_optional.h"
-#include "mod_ssl.h"
-#include "mod_auth.h"
-#include "util_mutex.h"
 
-
-#ifdef APR_HAS_THREADS
-#include "apr_thread_proc.h"
-#endif
-
-/* getpid for *NIX */
+/* getpid for *NIX vs Windows */
 #if APR_HAVE_SYS_TYPES_H
 #include <sys/types.h>
+#endif
+#if APR_HAVE_PROCESS_H
+#include <process.h>
 #endif
 #if APR_HAVE_UNISTD_H
 #include <unistd.h>
 #endif
 
-/* getpid for Windows */
-#if APR_HAVE_PROCESS_H
-#include <process.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+
+#include "mod_lua.h"
+#include "lua_apr.h"
+#include "lua_config.h"
+#include "mod_ssl.h"
+#include "mod_auth.h"
+#include "util_mutex.h"
+
+#ifdef APR_HAS_THREADS
+#include "apr_thread_proc.h"
 #endif
 
 APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ap_lua, AP_LUA, int, lua_open,
@@ -342,7 +341,7 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
 {
     apr_pool_t *pool;
     ap_lua_vm_spec *spec;
-    int n, rc;
+    int n, rc, nres;
     lua_State *L;
     lua_filter_ctx *ctx;    
     ap_lua_server_cfg *server_cfg = ap_get_module_config(r->server->module_config,
@@ -410,7 +409,7 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
             /* If a Lua filter is interested in filtering a request, it must first do a yield, 
              * otherwise we'll assume that it's not interested and pretend we didn't find it.
              */
-            rc = lua_resume(L, 1);
+            rc = lua_resume(L, 1, &nres);
             if (rc == LUA_YIELD) {
                 if (f->frec->providers == NULL) { 
                     /* Not wired by mod_filter */
@@ -432,7 +431,7 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
 static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade *pbbIn)
 {
     request_rec *r = f->r;
-    int rc;
+    int rc, nres;
     lua_State *L;
     lua_filter_ctx* ctx;
     conn_rec *c = r->connection;
@@ -492,7 +491,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             lua_setglobal(L, "bucket");
             
             /* If Lua yielded, it means we have something to pass on */
-            if (lua_resume(L, 0) == LUA_YIELD) {
+            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
                 if (olen > 0) { 
@@ -524,7 +523,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             apr_bucket *pbktEOS;
             lua_pushnil(L);
             lua_setglobal(L, "bucket");
-            if (lua_resume(L, 0) == LUA_YIELD) {
+            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 apr_bucket *pbktOut;
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
@@ -558,7 +557,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
                                        apr_off_t nBytes) 
 {
     request_rec *r = f->r;
-    int rc, lastCall = 0;
+    int rc, lastCall = 0, nres;
     lua_State *L;
     lua_filter_ctx* ctx;
     conn_rec *c = r->connection;
@@ -621,7 +620,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             lua_setglobal(L, "bucket");
             
             /* If Lua yielded, it means we have something to pass on */
-            if (lua_resume(L, 0) == LUA_YIELD) {
+            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
                 pbktOut = apr_bucket_heap_create(output, olen, 0, c->bucket_alloc);
@@ -643,7 +642,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             apr_bucket *pbktEOS = apr_bucket_eos_create(c->bucket_alloc);
             lua_pushnil(L);
             lua_setglobal(L, "bucket");
-            if (lua_resume(L, 0) == LUA_YIELD) {
+            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 apr_bucket *pbktOut;
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
@@ -1205,6 +1204,11 @@ static int lua_check_user_id_harness_last(request_rec *r)
 }
 */
 
+static int lua_pre_trans_name_harness(request_rec *r)
+{
+    return lua_request_rec_hook_harness(r, "pre_translate_name", APR_HOOK_MIDDLE);
+}
+
 static int lua_translate_name_harness_first(request_rec *r)
 {
     return lua_request_rec_hook_harness(r, "translate_name", AP_LUA_HOOK_FIRST);
@@ -1275,6 +1279,21 @@ static int lua_quick_harness(request_rec *r, int lookup)
         return DECLINED;
     }
     return lua_request_rec_hook_harness(r, "quick", APR_HOOK_MIDDLE);
+}
+
+static const char *register_pre_trans_name_hook(cmd_parms *cmd, void *_cfg,
+                                                const char *file,
+                                                const char *function)
+{
+    return register_named_file_function_hook("pre_translate_name", cmd, _cfg, file,
+                                             function, APR_HOOK_MIDDLE);
+}
+
+static const char *register_pre_trans_name_block(cmd_parms *cmd, void *_cfg,
+                                                 const char *line)
+{
+    return register_named_block_function_hook("pre_translate_name", cmd, _cfg,
+                                              line);
 }
 
 static const char *register_translate_name_hook(cmd_parms *cmd, void *_cfg,
@@ -1633,7 +1652,7 @@ static const char *register_lua_scope(cmd_parms *cmd,
         return apr_psprintf(cmd->pool,
                             "Scope type of '%s' cannot be used because this "
                             "server does not have threading support "
-                            "(APR_HAS_THREADS)" 
+                            "(APR_HAS_THREADS)",
                             scope);
 #endif
         cfg->vm_scope = AP_LUA_SCOPE_THREAD;
@@ -1644,7 +1663,7 @@ static const char *register_lua_scope(cmd_parms *cmd,
         return apr_psprintf(cmd->pool,
                             "Scope type of '%s' cannot be used because this "
                             "server does not have threading support "
-                            "(APR_HAS_THREADS)" 
+                            "(APR_HAS_THREADS)",
                             scope);
 #endif
         cfg->vm_scope = AP_LUA_SCOPE_SERVER;
@@ -1834,7 +1853,7 @@ static const char *register_authz_provider(cmd_parms *cmd, void *_cfg,
 }
 
 
-command_rec lua_commands[] = {
+static const command_rec lua_commands[] = {
 
     AP_INIT_TAKE1("LuaRoot", register_lua_root, NULL, OR_ALL,
                   "Specify the base path for resolving relative paths for mod_lua directives"),
@@ -1847,6 +1866,14 @@ command_rec lua_commands[] = {
 
     AP_INIT_TAKE3("LuaAuthzProvider", register_authz_provider, NULL, RSRC_CONF|EXEC_ON_READ,
                   "Provide an authorization provider"),
+
+    AP_INIT_TAKE2("LuaHookPreTranslateName", register_pre_trans_name_hook, NULL,
+                  OR_ALL,
+                  "Provide a hook for the pre_translate name phase of request processing"),
+
+    AP_INIT_RAW_ARGS("<LuaHookPreTranslateName", register_pre_trans_name_block, NULL,
+                     EXEC_ON_READ | OR_ALL,
+                     "Provide a hook for the pre_translate name phase of request processing"),
 
     AP_INIT_TAKE23("LuaHookTranslateName", register_translate_name_hook, NULL,
                   OR_ALL,
@@ -2101,6 +2128,9 @@ static void lua_register_hooks(apr_pool_t *p)
                            APR_HOOK_MIDDLE);
 
     /* http_request.h hooks */
+    ap_hook_pre_translate_name(lua_pre_trans_name_harness, NULL, NULL,
+                               APR_HOOK_MIDDLE);
+
     ap_hook_translate_name(lua_translate_name_harness_first, NULL, NULL,
                            AP_LUA_HOOK_FIRST);
     ap_hook_translate_name(lua_translate_name_harness, NULL, NULL,

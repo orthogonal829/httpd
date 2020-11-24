@@ -18,18 +18,16 @@
 
 #include "mod_proxy.h"
 #include "ap_regex.h"
+#include "ap_mpm.h"
 
 module AP_MODULE_DECLARE_DATA proxy_http_module;
 
 static int (*ap_proxy_clear_connection_fn)(request_rec *r, apr_table_t *headers) =
         NULL;
 
-static apr_status_t ap_proxy_http_cleanup(const char *scheme,
-                                          request_rec *r,
-                                          proxy_conn_rec *backend);
-
 static apr_status_t ap_proxygetline(apr_bucket_brigade *bb, char *s, int n,
                                     request_rec *r, int flags, int *read);
+
 
 /*
  * Canonicalise http-like URLs.
@@ -220,6 +218,12 @@ static void add_cl(apr_pool_t *p,
 #define MAX_MEM_SPOOL 16384
 
 typedef enum {
+    PROXY_HTTP_REQ_HAVE_HEADER = 0,
+
+    PROXY_HTTP_TUNNELING
+} proxy_http_state;
+
+typedef enum {
     RB_INIT = 0,
     RB_STREAM_CL,
     RB_STREAM_CHUNKED,
@@ -229,28 +233,128 @@ typedef enum {
 typedef struct {
     apr_pool_t *p;
     request_rec *r;
+    const char *proto;
     proxy_worker *worker;
+    proxy_dir_conf *dconf;
     proxy_server_conf *sconf;
-
     char server_portstr[32];
+
     proxy_conn_rec *backend;
     conn_rec *origin;
 
     apr_bucket_alloc_t *bucket_alloc;
     apr_bucket_brigade *header_brigade;
     apr_bucket_brigade *input_brigade;
+
     char *old_cl_val, *old_te_val;
     apr_off_t cl_val;
 
+    proxy_http_state state;
     rb_methods rb_method;
 
-    int force10;
     const char *upgrade;
+    proxy_tunnel_rec *tunnel;
 
-    int expecting_100;
-    unsigned int do_100_continue:1,
-                 prefetch_nonblocking:1;
+    apr_pool_t *async_pool;
+    apr_interval_time_t idle_timeout;
+
+    unsigned int can_go_async           :1,
+                 do_100_continue        :1,
+                 prefetch_nonblocking   :1,
+                 force10                :1;
 } proxy_http_req_t;
+
+static void proxy_http_async_finish(proxy_http_req_t *req)
+{ 
+    conn_rec *c = req->r->connection;
+
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, req->r,
+                  "proxy %s: finish async", req->proto);
+
+    proxy_run_detach_backend(req->r, req->backend);
+    ap_proxy_release_connection(req->proto, req->backend, req->r->server);
+
+    ap_finalize_request_protocol(req->r);
+    ap_process_request_after_handler(req->r);
+    /* don't touch req or req->r from here */
+
+    c->cs->state = CONN_STATE_LINGER;
+    ap_mpm_resume_suspended(c);
+}
+
+/* If neither socket becomes readable in the specified timeout,
+ * this callback will kill the request.
+ * We do not have to worry about having a cancel and a IO both queued.
+ */
+static void proxy_http_async_cancel_cb(void *baton)
+{ 
+    proxy_http_req_t *req = (proxy_http_req_t *)baton;
+
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, req->r,
+                  "proxy %s: cancel async", req->proto);
+
+    req->r->connection->keepalive = AP_CONN_CLOSE;
+    req->backend->close = 1;
+    proxy_http_async_finish(req);
+}
+
+/* Invoked by the event loop when data is ready on either end. 
+ * We don't need the invoke_mtx, since we never put multiple callback events
+ * in the queue.
+ */
+static void proxy_http_async_cb(void *baton)
+{ 
+    proxy_http_req_t *req = (proxy_http_req_t *)baton;
+    int status;
+
+    if (req->async_pool) {
+        /* Clear MPM's temporary data */
+        apr_pool_clear(req->async_pool);
+    }
+
+    switch (req->state) {
+    case PROXY_HTTP_TUNNELING:
+        /* Pump both ends until they'd block and then start over again */
+        status = ap_proxy_tunnel_run(req->tunnel);
+        if (status == HTTP_GATEWAY_TIME_OUT) {
+            status = SUSPENDED;
+        }
+        break;
+
+    default:
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, req->r,
+                      "proxy %s: unexpected async state (%i)",
+                      req->proto, (int)req->state);
+        status = HTTP_INTERNAL_SERVER_ERROR;
+        break;
+    }
+
+    if (status == SUSPENDED) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, req->r,
+                      "proxy %s: suspended, going async",
+                      req->proto);
+
+        if (!req->async_pool) {
+            /* Create the subpool used by the MPM to alloc its own
+             * temporary data, which we want to clear on the next
+             * round (above) to avoid leaks.
+             */
+            apr_pool_create(&req->async_pool, req->p);
+        }
+
+        ap_mpm_register_poll_callback_timeout(req->async_pool,
+                                              req->tunnel->pfds,
+                                              proxy_http_async_cb, 
+                                              proxy_http_async_cancel_cb, 
+                                              req, req->idle_timeout);
+    }
+    else if (ap_is_HTTP_ERROR(status)) {
+        proxy_http_async_cancel_cb(req);
+    }
+    else {
+        proxy_http_async_finish(req);
+    }
+}
 
 /* Read what's in the client pipe. If nonblocking is set and read is EAGAIN,
  * pass a FLUSH bucket to the backend and read again in blocking mode.
@@ -426,21 +530,6 @@ static int spool_reqbody_cl(proxy_http_req_t *req, apr_off_t *bytes_spooled)
     apr_file_t *tmpfile = NULL;
     apr_off_t limit;
 
-    /* Send "100 Continue" now if the client expects one, before
-     * blocking on the body, otherwise we'd wait for each other.
-     */
-    if (req->expecting_100) {
-        int saved_status = r->status;
-
-        r->expecting_100 = 1;
-        r->status = HTTP_CONTINUE;
-        ap_send_interim_response(r, 0);
-        AP_DEBUG_ASSERT(!r->expecting_100);
-
-        r->status = saved_status;
-        req->expecting_100 = 0;
-    }
-
     body_brigade = apr_brigade_create(p, bucket_alloc);
     *bytes_spooled = 0;
 
@@ -614,7 +703,7 @@ static int ap_proxy_http_prefetch(proxy_http_req_t *req,
     apr_read_type_e block;
     int rv;
 
-    if (req->force10 && req->expecting_100) {
+    if (req->force10 && r->expecting_100) {
         return HTTP_EXPECTATION_FAILED;
     }
 
@@ -716,18 +805,6 @@ static int ap_proxy_http_prefetch(proxy_http_req_t *req,
         apr_brigade_length(temp_brigade, 1, &bytes);
         bytes_read += bytes;
 
-        /* From https://tools.ietf.org/html/rfc7231#section-5.1.1
-         *   A server MAY omit sending a 100 (Continue) response if it has
-         *   already received some or all of the message body for the
-         *   corresponding request, or if [snip].
-         */
-        if (req->expecting_100 && bytes > 0) {
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, status, r, APLOGNO(10206)
-                          "prefetching request body while 100-continue is"
-                          "expected, omit sending interim response");
-            req->expecting_100 = 0;
-        }
-
         /*
          * Save temp_brigade in input_brigade. (At least) in the SSL case
          * temp_brigade contains transient buckets whose data would get
@@ -748,40 +825,22 @@ static int ap_proxy_http_prefetch(proxy_http_req_t *req,
         }
     }
 
-    /* Use chunked request body encoding or send a content-length body?
+    /*
+     * The request body is streamed by default, using either content-length
+     * or chunked transfer-encoding, like this:
      *
-     * Prefer C-L when:
+     *   The whole body (including no body) was received on prefetch, i.e.
+     *   the input brigade ends with EOS => RB_STREAM_CL.
      *
-     *   We have no request body (handled by RB_STREAM_CL)
+     *   C-L is known and reliable, i.e. only protocol filters in the input
+     *   chain thus none should change the body => RB_STREAM_CL.
      *
-     *   We have a request body length <= MAX_MEM_SPOOL
+     *   The administrator has not SetEnv "force-proxy-request-1.0" or
+     *   "proxy-sendcl" which prevents T-E => RB_STREAM_CHUNKED.
      *
-     *   The administrator has setenv force-proxy-request-1.0
-     *
-     *   The client sent a C-L body, and the administrator has
-     *   not setenv proxy-sendchunked or has set setenv proxy-sendcl
-     *
-     *   The client sent a T-E body, and the administrator has
-     *   setenv proxy-sendcl, and not setenv proxy-sendchunked
-     *
-     * If both proxy-sendcl and proxy-sendchunked are set, the
-     * behavior is the same as if neither were set, large bodies
-     * that can't be read will be forwarded in their original
-     * form of C-L, or T-E.
-     *
-     * To ensure maximum compatibility, setenv proxy-sendcl
-     * To reduce server resource use,   setenv proxy-sendchunked
-     *
-     * Then address specific servers with conditional setenv
-     * options to restore the default behavior where desirable.
-     *
-     * We have to compute content length by reading the entire request
-     * body; if request body is not small, we'll spool the remaining
-     * input to a temporary file.  Chunked is always preferable.
-     *
-     * We can only trust the client-provided C-L if the T-E header
-     * is absent, and the filters are unchanged (the body won't
-     * be resized by another content filter).
+     * Otherwise we need to determine and set a content-length, so spool the
+     * entire request body to memory or temporary file (above MAX_MEM_SPOOL),
+     * such that we finally know its length => RB_SPOOL_CL.
      */
     if (!APR_BRIGADE_EMPTY(input_brigade)
         && APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(input_brigade))) {
@@ -798,42 +857,23 @@ static int ap_proxy_http_prefetch(proxy_http_req_t *req,
         }
         req->rb_method = RB_STREAM_CL;
     }
-    else if (req->old_te_val) {
-        if (req->force10
-             || (apr_table_get(r->subprocess_env, "proxy-sendcl")
-                  && !apr_table_get(r->subprocess_env, "proxy-sendchunks")
-                  && !apr_table_get(r->subprocess_env, "proxy-sendchunked"))) {
-            req->rb_method = RB_SPOOL_CL;
+    else if (req->old_cl_val && r->input_filters == r->proto_input_filters) {
+        /* Streaming is possible by preserving the existing C-L */
+        if (!ap_parse_strict_length(&req->cl_val, req->old_cl_val)) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r, APLOGNO(01085)
+                          "could not parse request Content-Length (%s)",
+                          req->old_cl_val);
+            return HTTP_INTERNAL_SERVER_ERROR;
         }
-        else {
-            req->rb_method = RB_STREAM_CHUNKED;
-        }
+        req->rb_method = RB_STREAM_CL;
     }
-    else if (req->old_cl_val) {
-        if (r->input_filters == r->proto_input_filters) {
-            if (!ap_parse_strict_length(&req->cl_val, req->old_cl_val)) {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r, APLOGNO(01085)
-                              "could not parse request Content-Length (%s)",
-                              req->old_cl_val);
-                return HTTP_BAD_REQUEST;
-            }
-            req->rb_method = RB_STREAM_CL;
-        }
-        else if (!req->force10
-                  && (apr_table_get(r->subprocess_env, "proxy-sendchunks")
-                      || apr_table_get(r->subprocess_env, "proxy-sendchunked"))
-                  && !apr_table_get(r->subprocess_env, "proxy-sendcl")) {
-            req->rb_method = RB_STREAM_CHUNKED;
-        }
-        else {
-            req->rb_method = RB_SPOOL_CL;
-        }
+    else if (!req->force10 && !apr_table_get(r->subprocess_env,
+                                             "proxy-sendcl")) {
+        /* Streaming is possible using T-E: chunked */
+        req->rb_method = RB_STREAM_CHUNKED;
     }
     else {
-        /* This is an appropriate default; very efficient for no-body
-         * requests, and has the behavior that it will not add any C-L
-         * when the old_cl_val is NULL.
-         */
+        /* No streaming, C-L is the only option so spool to memory/file */
         req->rb_method = RB_SPOOL_CL;
     }
 
@@ -849,8 +889,8 @@ static int ap_proxy_http_prefetch(proxy_http_req_t *req,
         break;
 
     default: /* => RB_SPOOL_CL */
-        /* If we have to spool the body, do it now, before connecting or
-         * reusing the backend connection.
+        /* Spool now, before connecting or reusing the backend connection
+         * which could expire and be closed in the meantime.
          */
         rv = spool_reqbody_cl(req, &bytes);
         if (rv != OK) {
@@ -1237,13 +1277,11 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
     int i;
     const char *te = NULL;
     int original_status = r->status;
-    int proxy_status = OK;
     const char *original_status_line = r->status_line;
     const char *proxy_status_line = NULL;
     apr_interval_time_t old_timeout = 0;
-    proxy_dir_conf *dconf;
-
-    dconf = ap_get_module_config(r->per_dir_config, &proxy_module);
+    proxy_dir_conf *dconf = req->dconf;
+    int proxy_status = OK;
 
     bb = apr_brigade_create(p, c->bucket_alloc);
     pass_bb = apr_brigade_create(p, c->bucket_alloc);
@@ -1563,8 +1601,9 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
              *
              * So let's make it configurable.
              *
-             * We need to set "r->expecting_100 = 1" otherwise origin
-             * server behaviour will apply.
+             * We need to force "r->expecting_100 = 1" for RFC behaviour
+             * otherwise ap_send_interim_response() does nothing when
+             * the client did not ask for 100-continue.
              *
              * 101 Switching Protocol has its own configuration which
              * shouldn't be interfered by "proxy-interim-response".
@@ -1579,12 +1618,8 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
             if (!policy
                     || (!strcasecmp(policy, "RFC")
                         && (proxy_status != HTTP_CONTINUE
-                            || (req->expecting_100 = 1)))) {
+                            || (r->expecting_100 = 1)))) {
                 switch (proxy_status) {
-                case HTTP_CONTINUE:
-                    r->expecting_100 = req->expecting_100;
-                    req->expecting_100 = 0;
-                    break;
                 case HTTP_SWITCHING_PROTOCOLS:
                     AP_DEBUG_ASSERT(upgrade != NULL);
                     apr_table_setn(r->headers_out, "Connection", "Upgrade");
@@ -1657,12 +1692,10 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
                  * here though, because error_override or a potential retry on
                  * another backend could finally read that data and finalize
                  * the request processing, making keep-alive possible. So what
-                 * we do is restoring r->expecting_100 for ap_set_keepalive()
-                 * to do the right thing according to the final response and
+                 * we do is leaving r->expecting_100 alone, ap_set_keepalive()
+                 * will do the right thing according to the final response and
                  * any later update of r->expecting_100.
                  */
-                r->expecting_100 = req->expecting_100;
-                req->expecting_100 = 0;
             }
 
             /* Once only! */
@@ -1671,13 +1704,10 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
 
         if (proxy_status == HTTP_SWITCHING_PROTOCOLS) {
             apr_status_t rv;
-            proxy_tunnel_rec *tunnel;
-            apr_interval_time_t client_timeout = -1,
-                                backend_timeout = -1;
 
             /* If we didn't send the full body yet, do it now */
             if (do_100_continue) {
-                req->expecting_100 = 0;
+                r->expecting_100 = 0;
                 status = send_continue_body(req);
                 if (status != OK) {
                     return status;
@@ -1687,46 +1717,34 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(10239)
                           "HTTP: tunneling protocol %s", upgrade);
 
-            rv = ap_proxy_tunnel_create(&tunnel, r, origin, "HTTP");
+            rv = ap_proxy_tunnel_create(&req->tunnel, r, origin, upgrade);
             if (rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, APLOGNO(10240)
                               "can't create tunnel for %s", upgrade);
                 return HTTP_INTERNAL_SERVER_ERROR;
             }
 
-            /* Set timeout to the lowest configured for client or backend */
-            apr_socket_timeout_get(backend->sock, &backend_timeout);
-            apr_socket_timeout_get(ap_get_conn_socket(c), &client_timeout);
-            if (backend_timeout >= 0 && backend_timeout < client_timeout) {
-                tunnel->timeout = backend_timeout;
-            }
-            else {
-                tunnel->timeout = client_timeout;
+            r->status = HTTP_SWITCHING_PROTOCOLS;
+            req->proto = upgrade;
+
+            if (req->can_go_async) {
+                /* Let the MPM schedule the work when idle */
+                req->state = PROXY_HTTP_TUNNELING;
+                req->tunnel->timeout = dconf->async_delay;
+                proxy_http_async_cb(req);
+                return SUSPENDED;
             }
 
-            /* Bidirectional non-HTTP stream will confuse mod_reqtimeoout, we
-             * use a single idle timeout from now on.
-             */
-            ap_remove_input_filter_byhandle(c->input_filters, "reqtimeout");
-
-            /* Let proxy tunnel forward everything */
-            status = ap_proxy_tunnel_run(tunnel);
+            /* Let proxy tunnel forward everything within this thread */
+            req->tunnel->timeout = req->idle_timeout;
+            status = ap_proxy_tunnel_run(req->tunnel);
             if (ap_is_HTTP_ERROR(status)) {
-                /* Tunnel always return HTTP_GATEWAY_TIME_OUT on timeout,
-                 * but we can differentiate between client and backend here.
-                 */
-                if (status == HTTP_GATEWAY_TIME_OUT
-                        && tunnel->timeout == client_timeout) {
-                    status = HTTP_REQUEST_TIME_OUT;
-                }
+                r->status = status;
             }
-            else {
-                /* Update r->status for custom log */
-                status = HTTP_SWITCHING_PROTOCOLS;
-            }
-            r->status = status;
 
             /* We are done with both connections */
+            r->connection->keepalive = AP_CONN_CLOSE;
+            backend->close = 1;
             return DONE;
         }
 
@@ -2042,14 +2060,6 @@ int ap_proxy_http_process_response(proxy_http_req_t *req)
     return OK;
 }
 
-static
-apr_status_t ap_proxy_http_cleanup(const char *scheme, request_rec *r,
-                                   proxy_conn_rec *backend)
-{
-    ap_proxy_release_connection(scheme, backend, r->server);
-    return OK;
-}
-
 /*
  * This handles http:// URLs, and other URLs using a remote proxy over http
  * If proxyhost is NULL, then contact the server directly, otherwise
@@ -2071,6 +2081,7 @@ static int proxy_http_handler(request_rec *r, proxy_worker *worker,
     proxy_http_req_t *req = NULL;
     proxy_conn_rec *backend = NULL;
     apr_bucket_brigade *input_brigade = NULL;
+    int mpm_can_poll = 0;
     int is_ssl = 0;
     conn_rec *c = r->connection;
     proxy_dir_conf *dconf;
@@ -2122,19 +2133,25 @@ static int proxy_http_handler(request_rec *r, proxy_worker *worker,
                                               worker, r->server)) != OK) {
         return status;
     }
-
     backend->is_ssl = is_ssl;
+
+    dconf = ap_get_module_config(r->per_dir_config, &proxy_module);
+    ap_mpm_query(AP_MPMQ_CAN_POLL, &mpm_can_poll);
 
     req = apr_pcalloc(p, sizeof(*req));
     req->p = p;
     req->r = r;
     req->sconf = conf;
+    req->dconf = dconf;
     req->worker = worker;
     req->backend = backend;
+    req->proto = proxy_function;
     req->bucket_alloc = c->bucket_alloc;
+    req->can_go_async = (mpm_can_poll &&
+                         dconf->async_delay_set &&
+                         dconf->async_delay >= 0);
+    req->state = PROXY_HTTP_REQ_HAVE_HEADER;
     req->rb_method = RB_INIT;
-
-    dconf = ap_get_module_config(r->per_dir_config, &proxy_module);
 
     if (apr_table_get(r->subprocess_env, "force-proxy-request-1.0")) {
         req->force10 = 1;
@@ -2144,6 +2161,22 @@ static int proxy_http_handler(request_rec *r, proxy_worker *worker,
         const char *upgrade = apr_table_get(r->headers_in, "Upgrade");
         if (upgrade && ap_proxy_worker_can_upgrade(p, worker, upgrade)) {
             req->upgrade = upgrade;
+        }
+    }
+
+    if (req->can_go_async || req->upgrade) {
+        /* If ProxyAsyncIdleTimeout is not set, use backend timeout */
+        if (req->can_go_async && dconf->async_idle_timeout_set) {
+            req->idle_timeout = dconf->async_idle_timeout;
+        }
+        else if (worker->s->timeout_set) {
+            req->idle_timeout = worker->s->timeout;
+        }
+        else if (conf->timeout_set) {
+            req->idle_timeout = conf->timeout;
+        }
+        else {
+            req->idle_timeout = r->server->timeout;
         }
     }
 
@@ -2162,23 +2195,17 @@ static int proxy_http_handler(request_rec *r, proxy_worker *worker,
     /* Should we handle end-to-end or ping 100-continue? */
     if ((r->expecting_100 && (dconf->forward_100_continue || input_brigade))
             || PROXY_DO_100_CONTINUE(worker, r)) {
-        /* We need to reset r->expecting_100 or prefetching will cause
-         * ap_http_filter() to send "100 Continue" response by itself. So
-         * we'll use req->expecting_100 in mod_proxy_http to determine whether
-         * the client should be forwarded "100 continue", and r->expecting_100
-         * will be restored at the end of the function with the actual value of
-         * req->expecting_100 (i.e. cleared only if mod_proxy_http sent the
-         * "100 Continue" according to its policy).
-         */
-        req->do_100_continue = req->prefetch_nonblocking = 1;
-        req->expecting_100 = r->expecting_100;
-        r->expecting_100 = 0;
+        req->do_100_continue = 1;
     }
+
     /* Should we block while prefetching the body or try nonblocking and flush
      * data to the backend ASAP?
      */
-    else if (input_brigade || apr_table_get(r->subprocess_env,
-                                            "proxy-prefetch-nonblocking")) {
+    if (input_brigade
+             || req->can_go_async
+             || req->do_100_continue
+             || apr_table_get(r->subprocess_env,
+                              "proxy-prefetch-nonblocking")) {
         req->prefetch_nonblocking = 1;
     }
 
@@ -2297,6 +2324,9 @@ static int proxy_http_handler(request_rec *r, proxy_worker *worker,
 
         /* Step Five: Receive the Response... Fall thru to cleanup */
         status = ap_proxy_http_process_response(req);
+        if (status == SUSPENDED) {
+            return SUSPENDED;
+        }
         if (req->backend) {
             proxy_run_detach_backend(r, req->backend);
         }
@@ -2309,11 +2339,8 @@ cleanup:
     if (req->backend) {
         if (status != OK)
             req->backend->close = 1;
-        ap_proxy_http_cleanup(proxy_function, r, req->backend);
-    }
-    if (req->expecting_100) {
-        /* Restore r->expecting_100 if we didn't touch it */
-        r->expecting_100 = req->expecting_100;
+        ap_proxy_release_connection(proxy_function, req->backend,
+                                    r->server);
     }
     return status;
 }
