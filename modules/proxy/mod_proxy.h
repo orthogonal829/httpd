@@ -755,11 +755,13 @@ PROXY_DECLARE(char *) ap_proxy_worker_name(apr_pool_t *p,
  * @param p       memory pool used for displaying worker name
  * @param worker  the worker
  * @param upgrade the Upgrade header to match
+ * @param dflt    default protocol (NULL for none)
  * @return        1 (true) or 0 (false)
  */
 PROXY_DECLARE(int) ap_proxy_worker_can_upgrade(apr_pool_t *p,
                                                const proxy_worker *worker,
-                                               const char *upgrade);
+                                               const char *upgrade,
+                                               const char *dflt);
 
 /**
  * Get the worker from proxy configuration
@@ -1226,6 +1228,55 @@ PROXY_DECLARE(int) ap_proxy_create_hdrbrgd(apr_pool_t *p,
                                            char *url, char *server_portstr,
                                            char **old_cl_val,
                                            char **old_te_val);
+
+/**
+ * Prefetch the client request body (in memory), up to a limit.
+ * Read what's in the client pipe. If nonblocking is set and read is EAGAIN,
+ * pass a FLUSH bucket to the backend and read again in blocking mode.
+ * @param r             client request
+ * @param backend       backend connection
+ * @param input_brigade input brigade to use/fill
+ * @param block         blocking or non-blocking mode
+ * @param bytes_read    number of bytes read
+ * @param max_read      maximum number of bytes to read
+ * @return              OK or HTTP_* error code
+ * @note max_read is rounded up to APR_BUCKET_BUFF_SIZE
+ */
+PROXY_DECLARE(int) ap_proxy_prefetch_input(request_rec *r,
+                                           proxy_conn_rec *backend,
+                                           apr_bucket_brigade *input_brigade,
+                                           apr_read_type_e block,
+                                           apr_off_t *bytes_read,
+                                           apr_off_t max_read);
+
+/**
+ * Spool the client request body to memory, or disk above given limit.
+ * @param r             client request
+ * @param backend       backend connection
+ * @param input_brigade input brigade to use/fill
+ * @param bytes_spooled number of bytes spooled
+ * @param max_mem_spool maximum number of in-memory bytes
+ * @return              OK or HTTP_* error code
+ */
+PROXY_DECLARE(int) ap_proxy_spool_input(request_rec *r,
+                                        proxy_conn_rec *backend,
+                                        apr_bucket_brigade *input_brigade,
+                                        apr_off_t *bytes_spooled,
+                                        apr_off_t max_mem_spool);
+
+/**
+ * Read what's in the client pipe. If the read would block (EAGAIN),
+ * pass a FLUSH bucket to the backend and read again in blocking mode.
+ * @param r             client request
+ * @param backend       backend connection
+ * @param input_brigade brigade to use/fill
+ * @param max_read      maximum number of bytes to read
+ * @return              OK or HTTP_* error code
+ */
+PROXY_DECLARE(int) ap_proxy_read_input(request_rec *r,
+                                       proxy_conn_rec *backend,
+                                       apr_bucket_brigade *input_brigade,
+                                       apr_off_t max_read);
 
 /**
  * @param bucket_alloc  bucket allocator

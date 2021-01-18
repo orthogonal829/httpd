@@ -659,14 +659,19 @@
  *                         dav_find_attr().
  * 20200705.2 (2.5.1-dev)  Add dav_liveprop_elem structure and
  *                         DAV_PROP_ELEMENT key.
+ * 20200705.3 (2.5.1-dev)  Add ap_proxy_prefetch_input(),
+ *                         ap_proxy_spool_input() and
+ *                         ap_proxy_read_input().
+ * 20200705.4 (2.5.1-dev)  Add ap_get_status_line_ex()
+ * 20201214.0 (2.5.1-dev)  Axe struct core_net_rec
  */
 
 #define MODULE_MAGIC_COOKIE 0x41503235UL /* "AP25" */
 
 #ifndef MODULE_MAGIC_NUMBER_MAJOR
-#define MODULE_MAGIC_NUMBER_MAJOR 20200705
+#define MODULE_MAGIC_NUMBER_MAJOR 20201214
 #endif
-#define MODULE_MAGIC_NUMBER_MINOR 2             /* 0...n */
+#define MODULE_MAGIC_NUMBER_MINOR 0             /* 0...n */
 
 /**
  * Determine if the server's current MODULE_MAGIC_NUMBER is at least a

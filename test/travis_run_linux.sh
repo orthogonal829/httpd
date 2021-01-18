@@ -58,6 +58,8 @@ if test -v TEST_VPATH; then
     cd ../vpath
 fi
 
+builddir=$PWD
+
 $srcdir/configure --prefix=$PREFIX $CONFIG
 make $MFLAGS
 
@@ -84,6 +86,13 @@ if ! test -v SKIP_TESTING; then
         export UBSAN_OPTIONS="log_path=$PWD/ubsan.log"
     fi
 
+    if test -v TEST_ASAN; then
+        export ASAN_OPTIONS="log_path=$PWD/asan.log"
+    fi
+
+    # Try to keep all potential coredumps from all processes
+    sudo sysctl -w kernel.core_uses_pid=1 2>/dev/null || true
+
     if test -v WITH_TEST_SUITE; then
         make check TESTS="${TESTS}" TEST_CONFIG="${TEST_ARGS}"
         RV=$?
@@ -96,11 +105,30 @@ if ! test -v SKIP_TESTING; then
         popd
     fi
 
+    # Skip further testing if a core dump was created during the test
+    # suite run above.
+    if test $RV -eq 0 && ls test/perl-framework/t/core test/perl-framework/t/core.* &>/dev/null; then
+        RV=4
+    fi            
+    
     if test -v TEST_SSL -a $RV -eq 0; then
         pushd test/perl-framework
             for cache in shmcb redis:localhost:6379 memcache:localhost:11211; do
-                SSL_SESSCACHE=$cache ./t/TEST -sslproto TLSv1.2 -defines TEST_SSL_SESSCACHE t/ssl
+                SSL_SESSCACHE=$cache ./t/TEST -sslproto TLSv1.2 -defines TEST_SSL_SESSCACHE -start
+                ./t/TEST t/ssl
                 RV=$?
+                if test $RV -eq 0; then
+                    # TODO: only really useful in e.g. triggering
+                    # server segfaults which are caught later, doesn't
+                    # directly catch non-200 responses etc.
+                    $builddir/support/ab -qd -n 4000 -c 20 -f TLS1.2 https://localhost:8532/
+                    RV=$?
+                fi
+                ./t/TEST -stop
+                SRV=$?
+                if test $RV -eq 0 -a $SRV -ne 0; then
+                    RV=$SRV
+                fi
                 test $RV -eq 0 || break
             done
         popd
@@ -141,10 +169,20 @@ if ! test -v SKIP_TESTING; then
         RV=3
     fi
 
-    if test -f test/perl-framework/t/core; then
-        gdb -ex 'thread apply all backtrace' -batch ./httpd test/perl-framework/t/core
-        RV=4
+    if test -v TEST_ASAN && ls asan.log.* &> /dev/null; then
+        cat asan.log.*
+
+        # ASan can report memory leaks, fail on errors only
+        if grep -q "ERROR: AddressSanitizer:" `ls asan.log.*`; then
+            RV=4
+        fi
     fi
+
+    shopt -s nullglob 
+    for core in test/perl-framework/t/core* ; do
+        gdb -ex 'thread apply all backtrace' -batch ./httpd "$core"
+        RV=5
+    done
 
     exit $RV
 fi

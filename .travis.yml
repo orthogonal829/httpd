@@ -19,7 +19,7 @@ addons:
       - libapr1-dev
       - libaprutil1-dev
       - perl-doc
-      - lua5.3-dev
+      - liblua5.3-dev
       - libbrotli-dev
       - libcurl4-openssl-dev
       - libsystemd-dev
@@ -137,7 +137,7 @@ jobs:
             - libapr1-dev
             - libaprutil1-dev
             - perl-doc
-            - lua5.3-dev
+            - liblua5.3-dev
             - libbrotli-dev
             - libcurl4-openssl-dev
             - libsystemd-dev
@@ -159,7 +159,7 @@ jobs:
             - libapr1-dev
             - libaprutil1-dev
             - perl-doc
-            - lua5.3-dev
+            - liblua5.3-dev
             - libbrotli-dev
             - libcurl4-openssl-dev
             - libsystemd-dev
@@ -181,7 +181,7 @@ jobs:
             - libapr1-dev
             - libaprutil1-dev
             - perl-doc
-            - lua5.3-dev
+            - liblua5.3-dev
             - libbrotli-dev
             - libcurl4-openssl-dev
             - libsystemd-dev
@@ -237,7 +237,7 @@ jobs:
            APU_CONFIG="--with-crypto --with-ldap"
            CLEAR_CACHE=1
     # -------------------------------------------------------------------------
-    - name: Linux Ubuntu, --enable-pool-debug
+    - name: Linux Ubuntu, pool-debug
       env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
            APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
            CONFIG="--enable-mods-shared=reallyall"
@@ -251,6 +251,13 @@ jobs:
            TEST_MALLOC=1 TEST_SSL=1
            CLEAR_CACHE=1
     # -------------------------------------------------------------------------
+    - name: Linux Ubuntu, Shared MPMs (worker), pool-debug, SSL/TLS variants
+      env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
+           CONFIG="--enable-mods-shared=reallyall --enable-mpms-shared=all --with-mpm=worker"
+           TEST_MALLOC=1 TEST_SSL=1
+           CLEAR_CACHE=1
+    # -------------------------------------------------------------------------
     - name: Linux Ubuntu, Shared MPMs (prefork), pool-debug, SSL/TLS variants
       env: APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
            APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
@@ -258,12 +265,17 @@ jobs:
            TEST_MALLOC=1 TEST_SSL=1
            CLEAR_CACHE=1
     # -------------------------------------------------------------------------
-    - name: Linux Ubuntu, APR 1.7.0, APR-util 1.6.1, pool-debug, LDAP
-      env: APR_VERSION=1.7.0 APR_CONFIG="--enable-pool-debug"
+    - name: Linux Ubuntu, APR 1.7.0, APR-util 1.6.1, LDAP
+      env: APR_VERSION=1.7.0
            APU_VERSION=1.6.1 APU_CONFIG="--with-crypto --with-ldap"
            CONFIG="--enable-mods-shared=reallyall"
            TEST_MALLOC=1 TEST_LDAP=1 TEST_ARGS="-defines LDAP"
            TESTS="t/modules/"
+    # -------------------------------------------------------------------------
+    - if: *condition_not_24x
+      name: Linux Ubuntu, event, APR trunk thread debugging
+      env: APR_VERSION=trunk APR_CONFIG="--with-crypto --enable-thread-debug"
+           CONFIG="--enable-mods-shared=reallyall --with-mpm=event"
     # -------------------------------------------------------------------------
     - name: Linux Ubuntu, litmus WebDAV tests
       env: CONFIG="--enable-dav --enable-dav-fs"
@@ -279,7 +291,7 @@ jobs:
             - libapr1-dev
             - libaprutil1-dev
             - perl-doc
-            - lua5.3-dev
+            - liblua5.3-dev
             - libbrotli-dev
             - libcurl4-openssl-dev
             - libsystemd-dev
@@ -301,7 +313,26 @@ jobs:
     - name: Linux Ubuntu Focal, UBSan
       dist: focal
       env: NOTEST_CFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" NOTEST_LIBS=-lubsan
-           CONFIG="--enable-mods-shared=reallyall --disable-http2" TEST_UBSAN=1
+           CONFIG="--enable-mods-shared=reallyall --disable-http2"
+           TEST_UBSAN=1
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu Focal, ASan
+      dist: focal
+      env: NOTEST_CFLAGS="-ggdb -fsanitize=address -fno-sanitize-recover=address -fno-omit-frame-pointer"
+           APR_VERSION=1.7.x
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
+           CONFIG="--enable-mods-shared=reallyall"
+           TEST_ASAN=1
+           CLEAR_CACHE=1
+    # -------------------------------------------------------------------------
+    - name: Linux Ubuntu Focal, ASan, pool-debug
+      dist: focal
+      env: NOTEST_CFLAGS="-ggdb -fsanitize=address -fno-sanitize-recover=address -fno-omit-frame-pointer"
+           APR_VERSION=1.7.x APR_CONFIG="--enable-pool-debug"
+           APU_VERSION=1.7.x APU_CONFIG="--with-crypto --with-ldap"
+           CONFIG="--enable-mods-shared=reallyall"
+           TEST_ASAN=1
+           CLEAR_CACHE=1
   allow_failures:
     # Non-x86 are sometimes flaky:
     - arch: s390x
@@ -310,7 +341,7 @@ jobs:
       env: CONFIG="--enable-mods-shared=reallyall"
     - arch: ppc64le
       env: CONFIG="--enable-mods-shared=reallyall"
-           
+
 # CPAN modules are to be used with the system Perl and always with
 # CC=gcc, e.g. for the CC="gcc -m32" case the builds are not correct
 # otherwise.
@@ -318,7 +349,7 @@ before_install:
   - if [ "$TRAVIS_OS_NAME" = "linux" -a ! -v SKIP_TESTING ]; then
         if [ -v CLEAR_CACHE ]; then rm -rf ~/perl5; fi;
         cpanm --local-lib=~/perl5 local::lib && eval $(perl -I ~/perl5/lib/perl5/ -Mlocal::lib);
-        CC=gcc cpanm --notest Net::SSL LWP::Protocol::https ExtUtils::Embed Test::More AnyEvent DateTime HTTP::DAV Protocol::HTTP2::Client FCGI Apache::Test;
+        CC=gcc cpanm --notest Net::SSL LWP::Protocol::https ExtUtils::Embed Test::More AnyEvent DateTime HTTP::DAV Protocol::HTTP2::Client FCGI AnyEvent::WebSocket::Client Apache::Test;
     fi
 
 before_script:

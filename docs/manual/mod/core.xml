@@ -2030,6 +2030,52 @@ filenames</description>
 </directivesynopsis>
 
 <directivesynopsis>
+<name>FlushMaxPipelined</name>
+<description>Maximum number of pipelined responses above which they are flushed
+to the network</description>
+<syntax>FlushMaxPipelined <var>number</var></syntax>
+<default>FlushMaxPipelined 5</default>
+<contextlist><context>server config</context><context>virtual host</context>
+</contextlist>
+<compatibility>2.5 and later</compatibility>
+
+<usage>
+    <p>This directive allows to configure the maximum number of pipelined
+    responses, which remain pending so long as pipelined request are received.
+    When the limit is reached, reponses are forcibly flushed to the network in
+    blocking mode, until passing under the limit again.</p>
+
+    <p><directive>FlushMaxPipelined</directive> helps constraining memory
+    usage. When set to <var>0</var> pipelining is disabled, when set to
+    <var>-1</var> there is no limit (<directive>FlushMaxThreshold</directive>
+    still applies).</p>
+</usage>
+</directivesynopsis>
+
+<directivesynopsis>
+<name>FlushMaxThreshold</name>
+<description>Threshold above which pending data are flushed to the
+network</description>
+<syntax>FlushMaxThreshold<var>number-of-bytes</var></syntax>
+<default>FlushMaxThreshold 65536</default>
+<contextlist><context>server config</context><context>virtual host</context>
+</contextlist>
+<compatibility>2.5 and later</compatibility>
+
+<usage>
+    <p>This directive allows to configure the threshold for pending output
+    data (in bytes). When the limit is reached, data are forcibly flushed to
+    the network in blocking mode, until passing under the limit again.</p>
+
+    <p><directive>FlushMaxThreshold</directive> helps constraining memory
+    usage. When set to <var>0</var> or a too small value there are actually
+    no pending data, but for threaded MPMs there can be more threads busy
+    waiting for the network thus less ones available to handle the other
+    simultaneous connections.</p>
+</usage>
+</directivesynopsis>
+
+<directivesynopsis>
 <name>ForceType</name>
 <description>Forces all matching files to be served with the specified
 media type in the HTTP Content-Type header field</description>
@@ -4051,10 +4097,13 @@ directory</description>
        The protocol is used to determine which module should handle a request and
        to apply protocol specific optimizations with the <directive>AcceptFilter</directive>
        directive.</p>
-
-    <p>You only need to set the protocol if you are running on non-standard ports;
-       otherwise, <code>http</code> is assumed for port 80 and <code>https</code>
-       for port 443.</p>
+ 
+    <p>This directive not required for most
+       configurations. If not specified, <code>https</code> is the default for
+       port 443 and <code>http</code> the default for all other ports.  The
+       protocol is used to determine which module should handle a request, and
+       to apply protocol specific optimizations with the
+       <directive module="core">AcceptFilter</directive> directive.</p>
 
     <p>For example, if you are running <code>https</code> on a non-standard port,
        specify the protocol explicitly:</p>
@@ -4137,6 +4186,26 @@ Protocols h2 http/1.1
     <seealso><directive module="core">Protocols</directive></seealso>
 </directivesynopsis>
 
+
+<directivesynopsis>
+<name>ReadBufferSize</name>
+<description>Size of the buffers used to read data</description>
+<syntax>ReadBufferSize <var>bytes</var></syntax>
+<default>ReadBufferSize 8192</default>
+<contextlist><context>server config</context><context>virtual host</context>
+<context>directory</context></contextlist>
+<compatibility>2.5 and later</compatibility>
+
+<usage>
+    <p>This directive allows to configure the size (in bytes) of the memory
+    buffer used to read data from the network or files.</p>
+
+    <p>A larger buffer can increase peformances with larger data, but consumes
+    more memory per connection. The minimum configurable size is
+    <var>1024</var>.</p>
+</usage>
+</directivesynopsis>
+ 
 
 <directivesynopsis>
     <name>RegexDefaultOptions</name>
@@ -4375,18 +4444,18 @@ of a request or the last 63, assuming the request itself is greater than
 <contextlist><context>server config</context></contextlist>
 
 <usage>
-    <p>mod_status with <code>ExtendedStatus On</code>
+    <p><module>mod_status</module> with <code>ExtendedStatus On</code>
     displays the actual request being handled.
     For historical purposes, only 63 characters of the request
     are actually stored for display purposes. This directive
-    controls whether the 1st 63 characters are stored (the previous
+    controls whether the first 63 characters are stored (the previous
     behavior and the default) or if the last 63 characters are. This
     is only applicable, of course, if the length of the request is
     64 characters or greater.</p>
 
     <p>If Apache httpd is handling <code
     >GET&nbsp;/disk1/storage/apache/htdocs/images/imagestore1/food/apples.jpg&nbsp;HTTP/1.1</code
-    > mod_status displays as follows:
+    > <module>mod_status</module> displays as follows:
     </p>
 
     <table border="1">

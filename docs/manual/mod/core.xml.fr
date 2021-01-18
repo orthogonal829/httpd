@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE modulesynopsis SYSTEM "../style/modulesynopsis.dtd">
 <?xml-stylesheet type="text/xsl" href="../style/manual.fr.xsl"?>
-<!-- English Revision: 1883417 -->
+<!-- English Revision: 1885464 -->
 <!-- French translation : Lucien GENTIS -->
 <!-- Reviewed by : Vincent Deffontaines -->
 
@@ -2214,6 +2214,56 @@ entre elles à la réception d'une requête</seealso>
 </directivesynopsis>
 
 <directivesynopsis>
+<name>FlushMaxPipelined</name>
+<description>Nombre maximal de réponses en attente (pipelined) au-delà duquel
+elles sont envoyées sur le réseau</description>
+<syntax>FlushMaxPipelined <var>number</var></syntax>
+<default>FlushMaxPipelined 5</default>
+<contextlist><context>server config</context><context>virtual host</context>
+</contextlist>
+<compatibility>Disponible à partir de la version 2.5 du serveur HTTP Apache</compatibility>
+
+<usage>
+    <p>Cette directive permet de définir le nombre maximal de réponses
+    "pipelinées" qui restent en attente tant que des requêtes "pipelinées" sont
+    reçues. Lorsque cette limite est dépassée, l'envoi des réponses sur le
+    réseau est forcé en mode bloqué jusqu'à ce que leur nombre repasse en
+    dessous de la limite.</p>
+
+    <p>La directive <directive>FlushMaxPipelined</directive> permet de limiter
+    la consommation de mémoire. Lorsqu'elle est définie à <var>0</var>, le
+    pipelining est désactivé, et lorsqu'elle est définie à <var>-1</var>, il n'y
+    a plus de limite (mais la directive <directive>FlushMaxThreshold</directive>
+    s'applique quand-même).</p>
+</usage>
+</directivesynopsis>
+
+<directivesynopsis>
+<name>FlushMaxThreshold</name>
+<description>Seuil au-delà duquel les données en attente sont envoyées sur le
+réseau</description>
+<syntax>FlushMaxThreshold<var>number-of-bytes</var></syntax>
+<default>FlushMaxThreshold 65536</default>
+<contextlist><context>server config</context><context>virtual host</context>
+</contextlist>
+<compatibility>Disponible à partir de la version 2.5 du serveur HTTP Apache</compatibility>
+
+<usage>
+    <p>Cette directive permet de définir le seuil maximal de données en attente
+    d'envoi (en octets). Lorsque cette limite est dépassée, l'envoi des données sur le
+    réseau est forcé en mode bloqué jusqu'à ce que leur quantité repasse en
+    dessous du seuil spécifié.</p>
+
+    <p>La directive <directive>FlushMaxThreshold</directive> permet de limiter
+    la consommation de mémoire. Lorsqu'elle est définie à <var>0</var> ou à une
+    valeur trop petite, aucune donnée n'est mise en attente, mais dans le cas
+    des MPMs threadés, il peut alors y avoir plus de threads occupés en attente du
+    réseau, ce qui diminue d'autant le nombre de threads disponibles pour
+    traiter les autres connexions simultanées.</p>
+</usage>
+</directivesynopsis>
+
+<directivesynopsis>
 <name>ForceType</name>
 <description>Force le type de médium spécifié dans le champ d'en-tête
 HTTP Content-Type pour les fichiers correspondants</description>
@@ -4374,10 +4424,12 @@ serveur HTTP Apache.</compatibility>
     spécifiques au protocole via la directive
     <directive>AcceptFilter</directive>.</p>
 
-    <p>Vous ne devez définir le protocole que si vous travaillez avec
-    des ports non standards ; dans le cas général, le protocole
-    <code>http</code> est associé au port 80 et le protocole
-    <code>https</code> au port 443.</p>
+    <p>Dans la plupart des configurations, cette directive n'est pas nécessaire.
+    Si elle n'est pas définie, le protocole par défaut pour le port 443 est
+    <code>https</code> et <code>http</code> pour tous les autres ports. La
+    connaissance du protocole permet de déterminer quel module doit traiter la
+    requête, et d'appliquer les optimisations spécifiques au protocole via la
+    directive <directive module="core">AcceptFilter</directive>.</p>
 
     <p>Par exemple, si vous travaillez avec le protocole
     <code>https</code> sur un port non standard, spécifiez le protocole
@@ -4469,6 +4521,26 @@ serveur HTTP Apache.</compatibility>
         
     </usage>
     <seealso><directive module="core">Protocols</directive></seealso>
+</directivesynopsis>
+
+<directivesynopsis>
+<name>ReadBufferSize</name>
+<description>Taille des tampons utilisés pour lire les données</description>
+<syntax>ReadBufferSize <var>bytes</var></syntax>
+<default>ReadBufferSize 8192</default>
+<contextlist><context>server config</context><context>virtual host</context>
+<context>directory</context></contextlist>
+<compatibility>Disponible à partir de la version 2.5 du serveur HTTP
+Apache.</compatibility>
+
+<usage>
+    <p>Cette directive permet de définir la taille (en octets) du tampon mémoire
+    utilisé pour lire des données depuis le réseau ou un fichier.</p>
+
+    <p>Un tampon de grande taille peut améliorer les performances pour les
+    grandes quantités de données, mais consomme d'avantage de mémoire par
+    connexion. La taille minimale du tampon est de <var>1024</var> octets.</p>
+</usage>
 </directivesynopsis>
 
 <directivesynopsis>
@@ -4729,18 +4801,18 @@ elle-même possède plus de 63 caractères.</description>
 <contextlist><context>server config</context></contextlist>
 
 <usage>
-    <p>Avec <code>ExtendedStatus On</code>, mod_status affiche la
-    véritable requête en cours de traitement. Pour des raisons
-    historiques, seuls 63 caractères de la requête sont réellement
-    stockés à des fins d'affichage. Cette directive permet de déterminer
-    si ce sont les 63 premiers caractères qui seront stockés (c'est le
-    comportement par défaut),
-    ou si ce sont les 63 derniers. Ceci ne s'applique bien entendu que
-    si la taille de la requête est de 64 caractères ou plus.</p>
+    <p>Avec <code>ExtendedStatus On</code>, <module>mod_status</module> affiche
+    la véritable requête en cours de traitement. Pour des raisons historiques,
+    seuls 63 caractères de la requête sont réellement stockés à des fins
+    d'affichage. Cette directive permet de déterminer si ce sont les 63 premiers
+    caractères qui seront stockés (c'est le comportement par défaut), ou si ce
+    sont les 63 derniers. Ceci ne s'applique bien entendu que si la taille de la
+    requête est de 64 caractères ou plus.</p>
 
-    <p>Si Apache httpd traite la requête <code
-    >GET&nbsp;/disque1/stockage/apache/htdocs/images/rep-images1/nourriture/pommes.jpg&nbsp;HTTP/1.1</code>
-    , l'affichage de la requête par mod_status se présentera comme suit :
+    <p>Si Apache httpd traite la requête
+    <code>GET&nbsp;/disque1/stockage/apache/htdocs/images/rep-images1/nourriture/pommes.jpg&nbsp;HTTP/1.1</code>
+    , l'affichage de la requête par <module>mod_status</module> se présentera
+    comme suit :
     </p>
 
     <table border="1">

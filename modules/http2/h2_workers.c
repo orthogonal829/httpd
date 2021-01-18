@@ -365,8 +365,10 @@ h2_workers *h2_workers_create(server_rec *s, apr_pool_t *pchild,
         workers->dynamic = (workers->worker_count < workers->max_workers);
     }
     if (status == APR_SUCCESS) {
-        /* We want to stop and wait for workers threads before workers->pool
-         * is destroyed, thus as pre_cleanup of the parent pool (pchild).
+        /* Stop/join the workers threads when the MPM child exits (pchild is
+         * destroyed), and as a pre_cleanup of pchild thus before the threads
+         * pools (children of workers->pool) so that they are not destroyed
+         * before/under us.
          */
         apr_pool_pre_cleanup_register(pchild, workers, workers_pool_cleanup);    
         return workers;
